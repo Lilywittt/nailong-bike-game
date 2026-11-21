@@ -725,27 +725,25 @@
       </div>
 
       <div class="btn-row">
-        <button class="resume-btn hidden" id="resumeRunBtn">▶️ 续玩 0m</button>
-        <button class="launch-btn" id="launchBtn">🐔 发车！</button>
+        <button class="launch-btn" id="launchBtn">🐔 开始游戏！</button>
       </div>
     </div>
   </div>
 
-  <!-- TRUE IN-GAME PAUSE OVERLAY -->
+  <!-- TRUE IN-GAME PAUSE OVERLAY (Authentic 3-Button Arcade Pause!) -->
   <div class="overlay hidden" id="pauseOverlay">
     <div class="modal-card">
       <div class="modal-head">
-        <span class="modal-title">⏸️ 游戏已暂停</span>
+        <span class="modal-title">⏸️ 游戏暂停</span>
         <button class="close-x-btn" id="pauseCloseX">✕</button>
       </div>
       <div class="pause-stat-bar">
         <span id="pauseDistStat">📍 距离 0m</span>
-        <span id="pauseBeanStat">🌿 收获 0</span>
+        <span id="pauseBeanStat">🌿 本局 0</span>
       </div>
-      <button class="pause-btn primary" id="pauseResumeBtn">▶️ 继续狂飙</button>
+      <button class="pause-btn primary" id="pauseResumeBtn">▶️ 继续游戏</button>
       <button class="pause-btn warn" id="pauseRestartBtn">🔄 重新开始</button>
-      <button class="pause-btn" id="pauseAccountBtn">☁️ 账号云存档</button>
-      <button class="pause-btn" id="pauseToHubBtn">🏠 保存回库</button>
+      <button class="pause-btn" id="pauseExitBtn">🏠 结算退出</button>
     </div>
   </div>
 
@@ -759,8 +757,9 @@
 
       <!-- Guest Form -->
       <div id="authGuestBox" style="display:flex;flex-direction:column;gap:8px;">
-        <div class="auth-sub">纯账密存取 · 无需任何验证 · 换机不丢档</div>
-        <input class="auth-input" id="authUserInp" type="text" maxlength="24" autocomplete="username" placeholder="账号 (2~24位，不可重复)" />
+        <div class="auth-sub">默认自动本地存档 · 绑定账密可跨设备同步</div>
+        <input type="text" id="authHpTrap" tabindex="-1" autocomplete="off" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;" />
+        <input class="auth-input" id="authUserInp" type="text" maxlength="20" autocomplete="username" placeholder="账号 (2~20位，不可重复)" />
         <input class="auth-input" id="authPassInp" type="password" maxlength="64" autocomplete="current-password" placeholder="密码 (4位以上)" />
         <div class="auth-msg" id="authMsg"></div>
         <button class="pause-btn primary" id="authRegisterBtn">✨ 注册并保存当前进度</button>
@@ -822,7 +821,6 @@
       const shopGrid = document.getElementById('shopGrid');
       const preBoost400 = document.getElementById('preBoost400');
       const preBoost800 = document.getElementById('preBoost800');
-      const resumeRunBtn = document.getElementById('resumeRunBtn');
       const launchBtn = document.getElementById('launchBtn');
 
       const pauseBtn = document.getElementById('pauseBtn');
@@ -832,13 +830,13 @@
       const pauseBeanStat = document.getElementById('pauseBeanStat');
       const pauseResumeBtn = document.getElementById('pauseResumeBtn');
       const pauseRestartBtn = document.getElementById('pauseRestartBtn');
-      const pauseAccountBtn = document.getElementById('pauseAccountBtn');
-      const pauseToHubBtn = document.getElementById('pauseToHubBtn');
+      const pauseExitBtn = document.getElementById('pauseExitBtn');
 
       const authOverlay = document.getElementById('authOverlay');
       const authCloseBtn = document.getElementById('authCloseBtn');
       const authGuestBox = document.getElementById('authGuestBox');
       const authUserBox = document.getElementById('authUserBox');
+      const authHpTrap = document.getElementById('authHpTrap');
       const authUserInp = document.getElementById('authUserInp');
       const authPassInp = document.getElementById('authPassInp');
       const authMsg = document.getElementById('authMsg');
@@ -1669,10 +1667,10 @@
       }
       buildAllSculptedAssets();
 
-      // ==================== GUEST-DEFAULT + OPT-IN CLOUD ACCOUNT SAVE SYSTEM ====================
+      // ==================== LOCAL-FIRST + ANTI-ABUSE CLOUD ACCOUNT SAVE SYSTEM ====================
       const SAVE_KEY = 'pelican_brawl_save_v1';
-      const LIVE_RUN_KEY = 'pelican_brawl_active_run_v1';
       const AUTH_KEY = 'pelican_brawl_auth_v1';
+      const LOCAL_REG_CNT_KEY = 'pelican_brawl_reg_cnt_v1';
 
       const defaultSave = {
         beans: 260,
@@ -1710,15 +1708,6 @@
         if (rawCur) save = normalizeSaveObj(JSON.parse(rawCur));
       } catch (_) {}
 
-      let savedLiveRun = null;
-      try {
-        const rawRun = localStorage.getItem(LIVE_RUN_KEY) || localStorage.getItem('abstract_kupao_active_run_v7');
-        if (rawRun) {
-          const pr = JSON.parse(rawRun);
-          if (pr && pr.dist >= 20 && pr.hp > 0) savedLiveRun = pr;
-        }
-      } catch (_) {}
-
       let authState = { username: '', token: '' };
       try {
         const rawAuth = localStorage.getItem(AUTH_KEY);
@@ -1729,19 +1718,8 @@
       } catch (_) {}
 
       let cloudSyncTimer = null;
-
-      function getCurrentLiveRunPayload() {
-        if ((state === 'PLAYING' || state === 'PAUSED') && player.hp > 0 && runStats.dist >= 20) {
-          return {
-            dist: runStats.dist,
-            beans: runStats.beans,
-            hp: player.hp,
-            heroId: activeRunHeroId,
-            superCharge: Math.floor(superCharge)
-          };
-        }
-        return savedLiveRun;
-      }
+      let currentAuthTicket = '';
+      let bankedRunBeans = 0;
 
       async function syncCloudSaveNow(showFeedback = false) {
         if (!authState.token) return false;
@@ -1752,10 +1730,7 @@
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${authState.token}`
             },
-            body: JSON.stringify({
-              save,
-              liveRun: getCurrentLiveRunPayload()
-            }),
+            body: JSON.stringify({ save }),
             keepalive: true
           });
           const data = await resp.json();
@@ -1773,12 +1748,12 @@
             return true;
           }
         } catch (_) {
-          if (showFeedback) authLoggedMsg.textContent = '⚠️ 网络波动，已保存在本地';
+          if (showFeedback) authLoggedMsg.textContent = '⚠️ 网络波动，已自动保存在本地';
         }
         return false;
       }
 
-      function scheduleCloudSync(delayMs = 350) {
+      function scheduleCloudSync(delayMs = 2500) {
         if (!authState.token) return;
         if (cloudSyncTimer) clearTimeout(cloudSyncTimer);
         cloudSyncTimer = setTimeout(() => {
@@ -1791,46 +1766,56 @@
         try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (_) {}
         if (authState.token) {
           if (immediateCloud) syncCloudSaveNow(false);
-          else scheduleCloudSync(350);
+          else scheduleCloudSync(2500);
         }
       }
 
-      function saveActiveRunSnapshot(pushToCloud = false) {
-        if ((state !== 'PLAYING' && state !== 'PAUSED') || player.hp <= 0) return;
-        const snap = {
-          dist: runStats.dist,
-          beans: runStats.beans,
-          hp: player.hp,
-          heroId: activeRunHeroId,
-          superCharge: Math.floor(superCharge)
-        };
-        if (snap.dist >= 20) {
-          savedLiveRun = snap;
-          try { localStorage.setItem(LIVE_RUN_KEY, JSON.stringify(snap)); } catch (_) {}
-          if (pushToCloud && authState.token) syncCloudSaveNow(false);
+      // Incrementally banks earned beans & best distance to localStorage so browser refresh NEVER loses progress!
+      function bankRunProgress(pushToCloud = false) {
+        if (state !== 'PLAYING' && state !== 'PAUSED' && state !== 'DYING') return;
+        let changed = false;
+        const deltaBeans = Math.max(0, runStats.beans - bankedRunBeans);
+        if (deltaBeans > 0) {
+          save.beans += deltaBeans;
+          bankedRunBeans = runStats.beans;
+          changed = true;
         }
-      }
-
-      function clearActiveRunSnapshot() {
-        savedLiveRun = null;
-        try {
-          localStorage.removeItem(LIVE_RUN_KEY);
-          localStorage.removeItem('abstract_kupao_active_run_v7');
-        } catch (_) {}
+        if (runStats.dist > save.bestDist) {
+          save.bestDist = runStats.dist;
+          changed = true;
+        }
+        const cpReached = Math.floor(runStats.dist / 500) * 500;
+        if (cpReached > save.maxCheckpoint) {
+          save.maxCheckpoint = cpReached;
+          save.selectedCheckpoint = cpReached;
+          changed = true;
+        }
+        if (changed) {
+          try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (_) {}
+        }
+        if (pushToCloud && authState.token) {
+          syncCloudSaveNow(false);
+        }
       }
 
       function refreshAccountButtonsUI() {
         if (authState.token && authState.username) {
           hubAccountBtn.textContent = `☁️ ${authState.username}`;
           hubAccountBtn.classList.add('logged');
-          pauseAccountBtn.textContent = `☁️ 账号：${authState.username}`;
           authCurrentUserLbl.textContent = `👤 账号：${authState.username}`;
           authCloudSummary.textContent = `最高 ${save.bestDist}m · 存档点 ${save.maxCheckpoint}m · 🌿${save.beans}`;
         } else {
           hubAccountBtn.textContent = '☁️ 存档';
           hubAccountBtn.classList.remove('logged');
-          pauseAccountBtn.textContent = '☁️ 账号云存档';
         }
+      }
+
+      function fetchAntiBotTicket() {
+        currentAuthTicket = '';
+        fetch('/api/auth/ticket')
+          .then(r => r.json())
+          .then(d => { if (d && d.ticket) currentAuthTicket = d.ticket; })
+          .catch(() => {});
       }
 
       function openAuthModal() {
@@ -1845,6 +1830,7 @@
         } else {
           authUserBox.classList.add('hidden-block');
           authGuestBox.classList.remove('hidden-block');
+          fetchAntiBotTicket();
         }
         authOverlay.classList.remove('hidden');
       }
@@ -1856,7 +1842,6 @@
       }
 
       hubAccountBtn.addEventListener('click', openAuthModal);
-      pauseAccountBtn.addEventListener('click', openAuthModal);
       authCloseBtn.addEventListener('click', closeAuthModal);
       authOverlay.addEventListener('click', (e) => {
         if (e.target === authOverlay) closeAuthModal();
@@ -1868,20 +1853,31 @@
         const username = authUserInp.value.trim();
         const password = authPassInp.value;
         authMsg.classList.remove('ok');
-        if (username.length < 2 || username.length > 24 || /\s/.test(username)) {
-          authMsg.textContent = '❌ 账号需为2~24位字符且不含空格';
+        if (username.length < 2 || username.length > 20 || /[\s<>'"\\/;]/.test(username)) {
+          authMsg.textContent = '❌ 账号需为2~20位常规字符（不含空格）';
           return;
         }
         if (password.length < 4) {
           authMsg.textContent = '❌ 密码至少需要4位';
           return;
         }
+        if (mode === 'register') {
+          const localRegs = Number(localStorage.getItem(LOCAL_REG_CNT_KEY) || 0);
+          if (localRegs >= 3) {
+            authMsg.textContent = '❌ 本设备注册账号已达上限(3个)，请直接登录已有账号';
+            return;
+          }
+          if (!currentAuthTicket) {
+            await fetch('/api/auth/ticket').then(r => r.json()).then(d => { if (d && d.ticket) currentAuthTicket = d.ticket; }).catch(() => {});
+            await new Promise(res => setTimeout(res, 850));
+          }
+        }
         authBusy = true;
-        authMsg.textContent = mode === 'register' ? '⏳ 正在注册并上传存档...' : '⏳ 正在登录读取云存档...';
+        authMsg.textContent = mode === 'register' ? '⏳ 正在安全校验并上传存档...' : '⏳ 正在登录读取云存档...';
         try {
           const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login';
           const payload = mode === 'register'
-            ? { username, password, save, liveRun: getCurrentLiveRunPayload() }
+            ? { username, password, save, ticket: currentAuthTicket, hp_trap: authHpTrap.value || '' }
             : { username, password, guestSave: save };
           const resp = await fetch(endpoint, {
             method: 'POST',
@@ -1891,20 +1887,21 @@
           const data = await resp.json();
           if (!resp.ok || !data.ok) {
             authMsg.textContent = `❌ ${data.error || '操作失败，请重试'}`;
+            if (mode === 'register') fetchAntiBotTicket();
             authBusy = false;
             return;
+          }
+          if (mode === 'register') {
+            try {
+              const prevCnt = Number(localStorage.getItem(LOCAL_REG_CNT_KEY) || 0);
+              localStorage.setItem(LOCAL_REG_CNT_KEY, String(prevCnt + 1));
+            } catch (_) {}
           }
           authState = { username: data.username, token: data.token };
           try { localStorage.setItem(AUTH_KEY, JSON.stringify(authState)); } catch (_) {}
           if (data.save) {
             save = normalizeSaveObj(data.save);
             try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (_) {}
-          }
-          if (data.liveRun && state === 'HUB') {
-            savedLiveRun = data.liveRun;
-            try { localStorage.setItem(LIVE_RUN_KEY, JSON.stringify(savedLiveRun)); } catch (_) {}
-          } else if (mode === 'login' && !data.liveRun && state === 'HUB') {
-            clearActiveRunSnapshot();
           }
           authPassInp.value = '';
           playSfx('crate');
@@ -1914,7 +1911,7 @@
           openAuthModal();
           authLoggedMsg.textContent = mode === 'register' ? '✅ 账号注册成功，进度已上云！' : '✅ 云端存档已成功载入！';
         } catch (_) {
-          authMsg.textContent = '❌ 网络连接失败，请稍后重试';
+          authMsg.textContent = '❌ 网络波动，当前已为您自动使用本地存档';
         }
         authBusy = false;
       }
@@ -1927,7 +1924,6 @@
         try { localStorage.removeItem(AUTH_KEY); } catch (_) {}
         save = { ...defaultSave, unlocked: [...defaultSave.unlocked], mods: { ...defaultSave.mods } };
         try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (_) {}
-        clearActiveRunSnapshot();
         refreshAccountButtonsUI();
         if (state === 'HUB') refreshHubUI();
         showToast('👤 已切回默认游客模式');
@@ -1944,10 +1940,6 @@
               if (d.save) {
                 save = normalizeSaveObj(d.save);
                 try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (_) {}
-              }
-              if (d.liveRun && state === 'HUB') {
-                savedLiveRun = d.liveRun;
-                try { localStorage.setItem(LIVE_RUN_KEY, JSON.stringify(savedLiveRun)); } catch (_) {}
               }
               refreshAccountButtonsUI();
               if (state === 'HUB') refreshHubUI();
@@ -1991,7 +1983,9 @@
         { id: 'biplane', sprite: 'airdropCrate', toast: '✈️ 双翼轰炸机升空!!' }
       ];
 
-      const STAGE_SPAN_M = 250;
+      const STAGE_SPAN_M = 600;
+      const SUPER_BONUS_DURATION = 10.0;       // ~10s per Super Bonus!
+      const MIN_NORMAL_SEC_FOR_BONUS = 195.0;  // Strictly <= 4.88% (<5%) of total playtime!
       const STAGES = [
         { id: 'court', name: '🏀 练习生球场', skyTop: '#0369a1', skyMid: '#38bdf8', skyBot: '#fef08a', road: '#334155', grass: '#15803d' },
         { id: 'site', name: '🏗️ 背带拆迁工地', skyTop: '#7c2d12', skyMid: '#ea580c', skyBot: '#fde047', road: '#292524', grass: '#b45309' },
@@ -2208,17 +2202,9 @@
         preBoost400.classList.toggle('active', preSelectedBoost === 400);
         preBoost800.classList.toggle('active', preSelectedBoost === 800);
 
-        // 5. Resume Interrupted Run Button (Survives Page Refresh!)
-        if (savedLiveRun && savedLiveRun.dist >= 20) {
-          resumeRunBtn.classList.remove('hidden');
-          resumeRunBtn.textContent = `▶️ 续玩 ${savedLiveRun.dist}m`;
-        } else {
-          resumeRunBtn.classList.add('hidden');
-        }
-
         launchBtn.textContent = save.selectedCheckpoint > 0
-          ? `🐔 从 ${save.selectedCheckpoint}m 发车！`
-          : '🐔 直接发车！';
+          ? `🐔 从 ${save.selectedCheckpoint}m 出发！`
+          : '🐔 开始游戏！';
       }
 
       preBoost400.addEventListener('click', () => {
@@ -2334,14 +2320,18 @@
       let state = 'HUB';
       let runStats = { dist: 0, beans: 0 };
       let combo = 0, comboTimer = 0;
-      let superCharge = 0, superBonusTimer = 0; // Tiantian Kupao Super Bonus Mode!
+      let superCharge = 0, superBonusTimer = 0; // Rare Tiantian Kupao Super Bonus (<5% playtime, 10s duration)!
+      let normalPlaySecSinceBonus = 0;
+      let bonusSkyAlpha = 0;
+      let prevStageIndex = 0, stageFadeTimer = 0;
+      let smoothCamRefY = 0, smoothCamZoom = 1.0;
       let headStartTargetDist = 0;              // Rocket Head-Start target distance!
       let quickDashWindowTimer = 0;
       let autoSaveTimer = 1.5;
       let shakeTime = 0, shakeMag = 8, hitStopTimer = 0, deathSlowTimer = 0;
       let stageIndex = 0;
-      let activeBoss = null, nextBossDist = 340;
-      let nextSpawnX = 420, nextTruckDist = 180, nextFlagDist = 500;
+      let activeBoss = null, nextBossDist = 450;
+      let nextSpawnX = 420, nextTruckDist = 260, nextFlagDist = 500;
 
       const player = {
         x: 120, y: 0, vy: 0, vx: 325, baseSpeed: 325, boostTimer: 0,
@@ -2368,13 +2358,11 @@
 
       function getCamera() {
         const isPortrait = H > W;
-        const zoomOut = (player.giantTimer > 0 || player.mountId || headStartTargetDist > 0 || superBonusTimer > 0) ? 0.90 : 1.0;
-        const worldScale = (isPortrait ? Math.max(0.62, Math.min(0.76, W / 515)) : Math.max(0.78, Math.min(0.98, H / 490))) * zoomOut;
+        const worldScale = (isPortrait ? Math.max(0.62, Math.min(0.76, W / 515)) : Math.max(0.78, Math.min(0.98, H / 490))) * smoothCamZoom;
         const playerScreenX = isPortrait ? W * 0.20 : W * 0.19;
         const groundScreenY = isPortrait ? H * 0.65 : H * 0.70;
         const camX = player.x - playerScreenX / worldScale;
-        const refY = superBonusTimer > 0 ? -220 : Math.min(player.y, getBaseSurfaceY(player.x) + 45);
-        const camY = refY * 0.38 - groundScreenY / worldScale;
+        const camY = smoothCamRefY * 0.38 - groundScreenY / worldScale;
         return { worldScale, camX, camY };
       }
 
@@ -2409,33 +2397,42 @@
         }
       }
 
-      // ==================== TIANTIAN KUPAO SUPER BONUS STAGE! ====================
+      // ==================== RARE 10s SUPER BONUS STAGE (<=5% OF PLAYTIME!) ====================
+      function addSuperCharge(rawGain) {
+        if (superBonusTimer > 0 || headStartTargetDist > 0) return;
+        const timeCeiling = (normalPlaySecSinceBonus / MIN_NORMAL_SEC_FOR_BONUS) * 100;
+        superCharge = Math.min(100, timeCeiling, superCharge + rawGain);
+        if (superCharge >= 100 && normalPlaySecSinceBonus >= MIN_NORMAL_SEC_FOR_BONUS && !activeBoss) {
+          triggerSuperBonusStage();
+        }
+      }
+
       function triggerSuperBonusStage() {
         superCharge = 0;
-        superBonusTimer = 7.2;
-        activeBoss = null;
-        bossHud.classList.add('hidden');
+        normalPlaySecSinceBonus = 0;
+        superBonusTimer = SUPER_BONUS_DURATION; // 10.0s rare climax!
         enemyShots = [];
         player.onRail = null; player.ropeAnchor = null; player.ropeTimer = 0;
-        player.y = -220; player.vy = 0; player.onGround = true;
-        player.invulnTimer = Math.max(player.invulnTimer, 8.2);
+        player.mountId = null; player.mountTimer = 0;
+        // Smooth upward launch arc onto the -220 Rainbow Skyway (NO jarring 1-frame teleport!)
+        if (player.y > -215) {
+          player.vy = -560;
+          player.onGround = false;
+        }
+        player.invulnTimer = Math.max(player.invulnTimer, SUPER_BONUS_DURATION + 1.5);
         playSfx('crate');
-        shakeTime = 0.3; shakeMag = 12;
-        showToast('🌈 超级奖励 · 云端金豆派对!!');
+        shakeTime = 0.22; shakeMag = 9;
+        showToast('🌈 稀有超级奖励 · 10秒云端金豆狂欢!!');
 
-        // Spawn Dense Rainbow Constellations of Regular & 10x Giant Golden Jars + Super Props!
-        const startX = player.x + 140;
-        for (let w = 0; w < 5; w++) {
-          const wx = startX + w * 430;
-          for (let col = 0; col < 7; col++) {
-            const bx = wx + col * 44;
-            const arc = Math.sin((col / 6) * Math.PI) * 95;
-            beans.push({ x: bx, y: -255 - arc, val: 5, giant: col % 2 === 1, taken: false });
-            beans.push({ x: bx, y: -255 - arc - 44, val: 4, giant: false, taken: false });
-          }
-          if (w % 2 === 1) {
-            const pick = WORLD_PROP_POOL[Math.floor(Math.random() * 6)];
-            worldProps.push({ x: wx + 150, y: -330, baseY: -330, def: pick, taken: false, phase: w });
+        // Spawn 9 Smooth Waves of Regular & 10x Giant Golden Jars spanning all 10 seconds!
+        const startX = player.x + 220;
+        for (let w = 0; w < 9; w++) {
+          const wx = startX + w * 540;
+          for (let col = 0; col < 8; col++) {
+            const bx = wx + col * 46;
+            const arc = Math.sin((col / 7) * Math.PI) * 90;
+            beans.push({ x: bx, y: -252 - arc, val: 5, giant: col % 2 === 1, taken: false });
+            beans.push({ x: bx, y: -252 - arc - 44, val: 4, giant: false, taken: false });
           }
         }
       }
@@ -2445,7 +2442,7 @@
         playSfx('crate');
         shakeTime = 0.2; shakeMag = 10;
         showToast(def.toast);
-        superCharge = Math.min(100, superCharge + 14);
+        addSuperCharge(0.9);
 
         if (def.id === 'giant_spicy') {
           player.giantTimer = 8.0;
@@ -2535,29 +2532,36 @@
         e.stopPropagation(); ensureAudio(); activateHeadStartBoost(800, 75);
       });
 
-      // ==================== START OR RESUME RUN ====================
-      function startNewRun(heroId, startDistMeters = 0, boostMeters = 0, resumeData = null) {
+      // ==================== START NEW RUN ====================
+      function startNewRun(heroId, startDistMeters = 0, boostMeters = 0) {
         ensureAudio();
         activeRunHeroId = heroId || save.selectedHero;
         const h = getHero();
 
-        const initDist = resumeData ? resumeData.dist : startDistMeters;
-        runStats = { dist: initDist, beans: resumeData ? resumeData.beans : 0 };
+        const initDist = startDistMeters;
+        runStats = { dist: initDist, beans: 0 };
+        bankedRunBeans = 0;
         combo = 0; comboTimer = 0;
-        superCharge = resumeData ? (resumeData.superCharge || 0) : 20;
+        superCharge = 0;
+        normalPlaySecSinceBonus = 0;
         superBonusTimer = 0;
+        bonusSkyAlpha = 0;
         headStartTargetDist = 0;
         shakeTime = 0; hitStopTimer = 0; deathSlowTimer = 0;
         stageIndex = Math.floor(initDist / STAGE_SPAN_M) % STAGES.length;
+        prevStageIndex = stageIndex;
+        stageFadeTimer = 0;
         activeBoss = null;
-        nextBossDist = initDist + 290;
-        nextTruckDist = initDist + 160;
+        nextBossDist = initDist + 450;
+        nextTruckDist = initDist + 260;
         nextFlagDist = (Math.floor(initDist / 500) + 1) * 500;
         bossHud.classList.add('hidden');
         comboTag.classList.add('hidden');
 
         player.x = 120 + initDist * 18;
         player.y = getBaseSurfaceY(player.x);
+        smoothCamRefY = player.y;
+        smoothCamZoom = 1.0;
         player.vy = 0;
         player.baseSpeed = h.id === 'hakimi' ? 335 : 320;
         player.vx = player.baseSpeed;
@@ -2566,7 +2570,7 @@
         player.angle = 0; player.onGround = true; player.onRail = null;
         player.coyoteTimer = 0; player.jumpBufferTimer = 0;
         player.maxHp = 3;
-        player.hp = resumeData ? resumeData.hp : 3;
+        player.hp = 3;
         player.jumpsLeft = h.id === 'naiwa' ? 3 : 2;
         player.invulnTimer = 1.2; player.hurtPoseTimer = 0;
         player.strikeTimer = 0; player.actionCd = 0;
@@ -2603,7 +2607,7 @@
           }
           preSelectedBoost = 0;
         } else {
-          showToast(resumeData ? `▶️ 继续狂飙 ${initDist}m!` : STAGES[stageIndex].name);
+          showToast(STAGES[stageIndex].name);
           if (save.beans >= 40) {
             quickDashWindowTimer = 3.8;
             quickDashWrap.classList.remove('hidden');
@@ -2612,7 +2616,6 @@
           }
         }
 
-        saveActiveRunSnapshot();
         refreshBuffChips();
         syncControlsUI();
         updateTopHUD();
@@ -2624,30 +2627,22 @@
         state = 'PAUSED';
         jumpHeld = false;
         onActionRelease();
-        saveActiveRunSnapshot(true);
+        bankRunProgress(false);
         pauseDistStat.textContent = `📍 距离 ${runStats.dist}m`;
         pauseBeanStat.textContent = `🌿 本局 ${runStats.beans}`;
-        refreshAccountButtonsUI();
         pauseOverlay.classList.remove('hidden');
       }
 
       function resumeFromPause() {
         if (state !== 'PAUSED') return;
         pauseOverlay.classList.add('hidden');
-        closeAuthModal();
         state = 'PLAYING';
         player.invulnTimer = Math.max(player.invulnTimer, 0.35);
         lastTime = performance.now();
       }
 
       launchBtn.addEventListener('click', () => {
-        clearActiveRunSnapshot();
-        startNewRun(save.selectedHero, save.selectedCheckpoint, preSelectedBoost, null);
-      });
-      resumeRunBtn.addEventListener('click', () => {
-        if (savedLiveRun) {
-          startNewRun(savedLiveRun.heroId, savedLiveRun.dist, 0, savedLiveRun);
-        }
+        startNewRun(save.selectedHero, save.selectedCheckpoint, preSelectedBoost);
       });
       pauseBtn.addEventListener('click', () => {
         if (state === 'PLAYING') pauseGame();
@@ -2657,13 +2652,12 @@
       pauseCloseX.addEventListener('click', resumeFromPause);
       pauseRestartBtn.addEventListener('click', () => {
         pauseOverlay.classList.add('hidden');
-        clearActiveRunSnapshot();
-        startNewRun(activeRunHeroId, save.selectedCheckpoint, 0, null);
+        bankRunProgress(false);
+        startNewRun(activeRunHeroId, save.selectedCheckpoint, 0);
       });
-      pauseToHubBtn.addEventListener('click', () => {
+      pauseExitBtn.addEventListener('click', () => {
         pauseOverlay.classList.add('hidden');
-        saveActiveRunSnapshot(true);
-        finishRunAndOpenHub(true);
+        finishRunAndOpenHub();
       });
 
       document.addEventListener('visibilitychange', () => {
@@ -2720,8 +2714,8 @@
           const st = getStageForWorldX(nextSpawnX);
           const r = Math.random();
 
-          // Rich Direct-Pickup Modeled Props on almost every chunk!
-          if (Math.random() < 0.78) {
+          // Balanced Direct-Pickup Modeled Props (no chaotic prop spam!)
+          if (Math.random() < 0.38) {
             const px = nextSpawnX + 95;
             const py = getBaseSurfaceY(px) - (Math.random() < 0.45 ? 128 : 66);
             const pick = WORLD_PROP_POOL[Math.floor(Math.random() * WORLD_PROP_POOL.length)];
@@ -3275,10 +3269,7 @@
         if (en.kind === 'drone' && Math.random() < 0.35) {
           spawnBeanFountain(en.x, ey - 10, 5, 3);
         }
-        if (superBonusTimer <= 0) {
-          superCharge = Math.min(100, superCharge + 6.5);
-          if (superCharge >= 100) triggerSuperBonusStage();
-        }
+        addSuperCharge(0.28);
 
         hitStopTimer = 0.02;
         playSfx('combo_kill', combo - 1);
@@ -3347,11 +3338,10 @@
         player.vy = -340; player.onGround = false; player.onRail = null;
         playSfx('hurt');
         addPopup('哎哟你干嘛!', player.x, player.y - 98, '#fb7185');
-        saveActiveRunSnapshot();
+        bankRunProgress(false);
         updateTopHUD();
 
         if (player.hp <= 0) {
-          clearActiveRunSnapshot();
           state = 'DYING';
           deathSlowTimer = 1.1;
           speak('哎哟你干嘛哈哈哟');
@@ -3360,27 +3350,15 @@
         }
       }
 
-      function finishRunAndOpenHub(keepResume = false) {
+      function finishRunAndOpenHub() {
+        bankRunProgress(true);
         state = 'HUB';
         pauseOverlay.classList.add('hidden');
         bossHud.classList.add('hidden');
         quickDashWrap.classList.add('hidden');
         actionBtn.classList.remove('glow');
-
-        if (!keepResume) {
-          save.beans += runStats.beans;
-          if (runStats.dist > save.bestDist) save.bestDist = runStats.dist;
-          if (Math.floor(save.bestDist / 500) * 500 > save.maxCheckpoint) {
-            save.maxCheckpoint = Math.floor(save.bestDist / 500) * 500;
-          }
-          clearActiveRunSnapshot();
-          persistSave(true);
-          showToast(`🏁 跑了 ${runStats.dist}m · 收获 +${runStats.beans}🌿`);
-        } else {
-          try { savedLiveRun = JSON.parse(localStorage.getItem(LIVE_RUN_KEY)); } catch (_) {}
-          persistSave(true);
-          showToast(`⏸️ 已保存进度 (${runStats.dist}m)`);
-        }
+        persistSave(true);
+        showToast(`🏁 本局 ${runStats.dist}m · 收获 +${runStats.beans}🌿`);
         refreshHubUI();
         hubOverlay.classList.remove('hidden');
       }
@@ -3426,10 +3404,13 @@
           bossHud.classList.add('hidden');
           enemyShots = [];
           activeBoss = null;
-          nextBossDist = runStats.dist + 380;
-          superCharge = Math.min(100, superCharge + 45);
-          if (superCharge >= 100) triggerSuperBonusStage();
-          else showToast('🏆 击败魔王 +88🌿!');
+          nextBossDist = runStats.dist + 550;
+          runStats.beans += 88;
+          addSuperCharge(4.0);
+          if (superBonusTimer <= 0) {
+            if (superCharge >= 100 && normalPlaySecSinceBonus >= MIN_NORMAL_SEC_FOR_BONUS) triggerSuperBonusStage();
+            else showToast('🏆 击败魔王 +88🌿!');
+          }
         }
       }
 
@@ -3442,9 +3423,11 @@
         const spdRatio = (player.vx / 320).toFixed(1);
         speedText.textContent = `${spdRatio}x⚡`;
 
-        const pct = superBonusTimer > 0 ? (superBonusTimer / 7.2) * 100 : superCharge;
+        const pct = superBonusTimer > 0 ? (superBonusTimer / SUPER_BONUS_DURATION) * 100 : superCharge;
         superBarFill.style.width = `${Math.min(100, Math.max(0, pct))}%`;
-        superBarLbl.textContent = superBonusTimer > 0 ? '🌈 超级奖励狂欢中!' : `🌈 超级奖励 ${Math.floor(superCharge)}%`;
+        superBarLbl.textContent = superBonusTimer > 0
+          ? `🌈 超级奖励 ${superBonusTimer.toFixed(1)}s`
+          : `🌈 超级奖励 ${Math.floor(superCharge)}%`;
       }
 
       // ==================== MAIN UPDATE LOOP ====================
@@ -3473,11 +3456,11 @@
         const dt = realDt;
         const h = getHero();
 
-        // Periodic Live Auto-Save so Refresh NEVER Loses Run!
+        // Periodic Local Auto-Banking so Refresh NEVER Loses Beans or Checkpoints!
         autoSaveTimer -= realDt;
         if (autoSaveTimer <= 0) {
-          autoSaveTimer = 1.5;
-          saveActiveRunSnapshot();
+          autoSaveTimer = 2.0;
+          bankRunProgress(false);
         }
 
         if (quickDashWindowTimer > 0) {
@@ -3504,19 +3487,33 @@
           }
         }
 
-        // Super Bonus Stage Countdown -> Return to Road with Shockwave!
+        // Smooth Camera & Sky Interpolation + Rare Super Bonus Pacing (<5% playtime, 10s duration)
         if (superBonusTimer > 0) {
+          bonusSkyAlpha = Math.min(1, bonusSkyAlpha + realDt * 2.0);
           superBonusTimer -= realDt;
           if (superBonusTimer <= 0) {
             superBonusTimer = 0;
-            player.y = getBaseSurfaceY(player.x) - 110;
-            player.vy = 0; player.onGround = false;
-            player.invulnTimer = 1.8;
-            nextSpawnX = Math.max(nextSpawnX, player.x + 360);
-            playSfx('crater');
-            showToast('☄️ 重返赛道!');
+            // Smooth glide descent from -220 cloud highway down to road (zero screen snap!)
+            player.vy = -80;
+            player.onGround = false;
+            player.invulnTimer = 2.4;
+            nextSpawnX = Math.max(nextSpawnX, player.x + 420);
+            playSfx('jump');
+            showToast('🏁 超级奖励结束 · 继续狂飙!');
+          }
+        } else {
+          bonusSkyAlpha = Math.max(0, bonusSkyAlpha - realDt * 1.8);
+          if (headStartTargetDist <= 0) {
+            normalPlaySecSinceBonus += realDt;
+            addSuperCharge(realDt * 0.34);
           }
         }
+        if (stageFadeTimer > 0) stageFadeTimer = Math.max(0, stageFadeTimer - realDt * 1.1);
+
+        const targetZoom = (player.giantTimer > 0 || player.mountId || headStartTargetDist > 0 || superBonusTimer > 0) ? 0.91 : 1.0;
+        smoothCamZoom += (targetZoom - smoothCamZoom) * Math.min(1, realDt * 3.5);
+        const targetRefY = superBonusTimer > 0 ? -220 : Math.min(player.y, getBaseSurfaceY(player.x) + 45);
+        smoothCamRefY += (targetRefY - smoothCamRefY) * Math.min(1, realDt * 5.2);
 
         if (combo > 0) { comboTimer -= realDt; if (comboTimer <= 0) { combo = 0; comboTag.classList.add('hidden'); } }
         if (shakeTime > 0) shakeTime -= realDt;
@@ -3700,6 +3697,8 @@
         runStats.dist = Math.floor((player.x - 120) / 18);
         const curStageIdx = Math.floor(runStats.dist / STAGE_SPAN_M) % STAGES.length;
         if (curStageIdx !== stageIndex && superBonusTimer <= 0) {
+          prevStageIndex = stageIndex;
+          stageFadeTimer = 1.0;
           stageIndex = curStageIdx;
           player.sawShieldCharges = Math.max(player.sawShieldCharges, save.mods.sawBumper || 0);
           showToast(STAGES[stageIndex].name);
@@ -3713,15 +3712,14 @@
               save.maxCheckpoint = fl.dist;
               save.selectedCheckpoint = fl.dist;
             }
-            persistSave(true);
-            saveActiveRunSnapshot(true);
+            bankRunProgress(true);
             playSfx('crate');
             showToast(`🚩 存档点 ${fl.dist}m 已激活!`);
           }
         }
 
         if (!activeBoss && superBonusTimer <= 0 && headStartTargetDist <= 0 && runStats.dist >= nextTruckDist) {
-          nextTruckDist = runStats.dist + 230;
+          nextTruckDist = runStats.dist + 480;
           const tx = player.x + 430;
           cashTrucks.push({ x: tx, y: getBaseSurfaceY(tx), hp: 6, dead: false, flash: 0 });
           showToast('🚨 运钞车！撞它爆金币!');
@@ -4196,10 +4194,7 @@
           if (d < (player.giantTimer > 0 ? 75 : 48)) {
             b.taken = true;
             runStats.beans += b.giant ? 10 : b.val;
-            if (superBonusTimer <= 0) {
-              superCharge = Math.min(100, superCharge + (b.giant ? 6 : 1.6));
-              if (superCharge >= 100) triggerSuperBonusStage();
-            }
+            addSuperCharge(b.giant ? 0.22 : 0.07);
             playSfx('bean');
           }
         }
@@ -4441,12 +4436,28 @@
       }
 
       function drawAtmosphereAndScenery(camX) {
-        if (superBonusTimer > 0) {
-          // Euphoric Tiantian-Kupao Rainbow Skyway Party Background!
+        const st = STAGES[stageIndex];
+        const sg = ctx.createLinearGradient(0, 0, 0, H);
+        sg.addColorStop(0, st.skyTop); sg.addColorStop(0.58, st.skyMid); sg.addColorStop(1, st.skyBot);
+        ctx.fillStyle = sg; ctx.fillRect(0, 0, W, H);
+
+        // Smooth cross-fade from previous chapter sky so biome transitions never flash!
+        if (stageFadeTimer > 0 && prevStageIndex !== stageIndex) {
+          const pst = STAGES[prevStageIndex];
+          ctx.save();
+          ctx.globalAlpha = stageFadeTimer;
+          const psg = ctx.createLinearGradient(0, 0, 0, H);
+          psg.addColorStop(0, pst.skyTop); psg.addColorStop(0.58, pst.skyMid); psg.addColorStop(1, pst.skyBot);
+          ctx.fillStyle = psg; ctx.fillRect(0, 0, W, H);
+          ctx.restore();
+        }
+
+        if (bonusSkyAlpha > 0.01) {
+          ctx.save();
+          ctx.globalAlpha = bonusSkyAlpha;
           const rg = ctx.createLinearGradient(0, 0, 0, H);
           rg.addColorStop(0, '#4f46e5'); rg.addColorStop(0.45, '#ec4899'); rg.addColorStop(1, '#fef08a');
           ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
-          // Fluffy Golden-Pink Clouds!
           ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
           for (let sx = -60; sx < W + 120; sx += 140) {
             const ox = sx - ((camX * 0.25) % 140);
@@ -4456,13 +4467,9 @@
             ctx.arc(ox + 78, H * 0.69, 38, 0, Math.PI * 2);
             ctx.fill();
           }
-          return;
+          ctx.restore();
+          if (bonusSkyAlpha >= 0.98) return;
         }
-
-        const st = STAGES[stageIndex];
-        const sg = ctx.createLinearGradient(0, 0, 0, H);
-        sg.addColorStop(0, st.skyTop); sg.addColorStop(0.58, st.skyMid); sg.addColorStop(1, st.skyBot);
-        ctx.fillStyle = sg; ctx.fillRect(0, 0, W, H);
 
         ctx.save();
         drawSpaldingWheelOn(ctx, W * 0.82, H * 0.16, 24, performance.now() * 0.0008);
@@ -4985,13 +4992,12 @@
       }
 
       function flushBeforeUnload() {
-        saveActiveRunSnapshot(false);
+        bankRunProgress(false);
         if (authState.token && navigator.sendBeacon) {
           try {
             const blob = new Blob([JSON.stringify({
               token: authState.token,
-              save,
-              liveRun: getCurrentLiveRunPayload()
+              save
             })], { type: 'application/json' });
             navigator.sendBeacon('/api/save', blob);
           } catch (_) {}
