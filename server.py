@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -11,6 +12,18 @@ import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
+# Windows Registry often maps .js to text/plain, breaking strict ES6 <script type="module"> MIME checks!
+mimetypes.init()
+mimetypes.add_type("application/javascript; charset=utf-8", ".js")
+mimetypes.add_type("application/javascript; charset=utf-8", ".mjs")
+mimetypes.add_type("text/css; charset=utf-8", ".css")
+mimetypes.add_type("audio/mp4", ".m4a")
+mimetypes.add_type("audio/ogg", ".ogg")
+mimetypes.add_type("audio/mpeg", ".mp3")
+mimetypes.add_type("image/png", ".png")
+mimetypes.add_type("image/svg+xml", ".svg")
+mimetypes.add_type("image/jpeg", ".jpg")
+
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(ROOT_DIR, "pelican_local.db")
 DB_LOCK = threading.Lock()
@@ -18,13 +31,16 @@ PEPPER = "pelican_brawl_edge_shield_v2_9f8a7c6e"
 VALID_HEROES = {"nailong", "ikun", "pelican", "naiwa", "hakimi"}
 
 DEFAULT_SAVE = {
-    "beans": 260,
+    "beans": 150,
+    "dashEnergy": 0,
     "bestDist": 0,
+    "bestSingleRun": 0,
     "maxCheckpoint": 0,
     "selectedCheckpoint": 0,
     "selectedHero": "nailong",
-    "unlocked": ["ikun", "pelican", "naiwa", "nailong"],
+    "unlocked": ["ikun", "pelican", "naiwa", "nailong", "hakimi"],
     "mods": {"claw": 0, "nitro": 0, "sawBumper": 0, "mortarCat": 0},
+    "heroLv": {"nailong": 1, "ikun": 1, "pelican": 1, "naiwa": 1, "hakimi": 1},
 }
 
 
@@ -61,6 +77,18 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS leaderboard (
+              player_key TEXT PRIMARY KEY,
+              nickname TEXT NOT NULL,
+              hero TEXT NOT NULL,
+              best_single INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_lb_score ON leaderboard(best_single DESC)")
         conn.commit()
 
 
@@ -103,6 +131,7 @@ def sanitize_save(raw, prev=None):
     s = raw if isinstance(raw, dict) else {}
     p = prev if isinstance(prev, dict) else {}
     best_dist = min(999_999, max(0, int(s.get("bestDist") or 0), int(p.get("bestDist") or 0)))
+    best_single = min(999_999, max(0, int(s.get("bestSingleRun") or 0), int(p.get("bestSingleRun") or 0)))
     max_cp = min(
         999_500,
         max(
@@ -113,9 +142,9 @@ def sanitize_save(raw, prev=None):
         ),
     )
     if "beans" in s and s["beans"] is not None:
-        beans_val = min(9_999_999, max(0, int(s.get("beans") or 0)))
+        beans_val = min(999_999_999, max(0, int(s.get("beans") or 0)))
     else:
-        beans_val = min(9_999_999, max(260, int(p.get("beans") or 260)))
+        beans_val = min(999_999_999, max(260, int(p.get("beans") or 260)))
 
     unlocked = list(DEFAULT_SAVE["unlocked"])
     for arr in (p.get("unlocked"), s.get("unlocked")):
@@ -130,24 +159,65 @@ def sanitize_save(raw, prev=None):
     for k in ("claw", "nitro", "sawBumper", "mortarCat"):
         mods[k] = min(3, max(0, int(sm.get(k) or 0), int(pm.get(k) or 0)))
 
+    shl = s.get("heroLv") if isinstance(s.get("heroLv"), dict) else {}
+    phl = p.get("heroLv") if isinstance(p.get("heroLv"), dict) else {}
+    hero_lv = {}
+    for h in ("nailong", "ikun", "pelican", "naiwa", "hakimi"):
+        hero_lv[h] = min(6, max(1, int(shl.get(h) or 1), int(phl.get(h) or 1)))
+
     sel_cp_raw = s.get("selectedCheckpoint", p.get("selectedCheckpoint", 0))
     sel_cp = min(max_cp, max(0, int(sel_cp_raw or 0)))
     cand_hero = s.get("selectedHero") if isinstance(s.get("selectedHero"), str) else p.get("selectedHero")
     hero = cand_hero if cand_hero in VALID_HEROES else "nailong"
+    if "dashEnergy" in s and s["dashEnergy"] is not None:
+        dash_energy = min(30.0, max(0.0, round(float(s.get("dashEnergy") or 0.0), 1)))
+    else:
+        dash_energy = min(30.0, max(0.0, round(float(p.get("dashEnergy") or 0.0), 1)))
+
     return {
         "beans": beans_val,
+        "dashEnergy": dash_energy,
         "bestDist": best_dist,
+        "bestSingleRun": best_single,
         "maxCheckpoint": max_cp,
         "selectedCheckpoint": sel_cp,
         "selectedHero": hero,
         "unlocked": unlocked,
         "mods": mods,
+        "heroLv": hero_lv,
     }
 
 
 class GameHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT_DIR, **kwargs)
+
+    def end_headers(self):
+        if not getattr(self, "path", "").startswith("/api/"):
+            self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
+    def guess_type(self, path):
+        clean = str(path).split("?", 1)[0].lower()
+        if clean.endswith(".js") or clean.endswith(".mjs"):
+            return "application/javascript; charset=utf-8"
+        if clean.endswith(".css"):
+            return "text/css; charset=utf-8"
+        if clean.endswith(".html"):
+            return "text/html; charset=utf-8"
+        if clean.endswith(".m4a"):
+            return "audio/mp4"
+        if clean.endswith(".ogg"):
+            return "audio/ogg"
+        if clean.endswith(".mp3"):
+            return "audio/mpeg"
+        if clean.endswith(".png"):
+            return "image/png"
+        if clean.endswith(".svg"):
+            return "image/svg+xml"
+        if clean.endswith(".jpg") or clean.endswith(".jpeg"):
+            return "image/jpeg"
+        return super().guess_type(path)
 
     def client_ip_hash(self) -> str:
         ip = self.client_address[0] if self.client_address else "127.0.0.1"
@@ -218,6 +288,57 @@ class GameHandler(SimpleHTTPRequestHandler):
         if path == "/api/auth/ticket":
             ip_hash = self.client_ip_hash()
             return self.send_json({"ok": True, "ticket": make_ticket(ip_hash, int(time.time() * 1000))})
+        if path == "/api/leaderboard":
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            my_key = (qs.get("key") or [""])[0].strip()[:64]
+            with DB_LOCK, sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                # Sync registered players into leaderboard automatically
+                p_rows = conn.execute("SELECT username, display_name, save_json, updated_at FROM players").fetchall()
+                for pr in p_rows:
+                    try:
+                        sv = json.loads(pr["save_json"])
+                        bs = min(30000, max(0, int(sv.get("bestSingleRun") or 0)))
+                        hero = sv.get("selectedHero") if sv.get("selectedHero") in VALID_HEROES else "nailong"
+                        if bs > 0:
+                            conn.execute(
+                                """
+                                INSERT INTO leaderboard (player_key, nickname, hero, best_single, updated_at)
+                                VALUES (?, ?, ?, ?, ?)
+                                ON CONFLICT(player_key) DO UPDATE SET
+                                  nickname = excluded.nickname,
+                                  hero = excluded.hero,
+                                  best_single = MAX(leaderboard.best_single, excluded.best_single),
+                                  updated_at = CASE WHEN excluded.best_single > leaderboard.best_single THEN excluded.updated_at ELSE leaderboard.updated_at END
+                                """,
+                                (f"u:{pr['username']}", pr["display_name"], hero, bs, pr["updated_at"]),
+                            )
+                    except Exception:
+                        pass
+                conn.commit()
+                top_rows = conn.execute(
+                    "SELECT player_key, nickname, hero, best_single, updated_at FROM leaderboard WHERE best_single > 0 ORDER BY best_single DESC, updated_at ASC LIMIT 30"
+                ).fetchall()
+                total_cnt = conn.execute("SELECT COUNT(*) FROM leaderboard WHERE best_single > 0").fetchone()[0]
+                my_rank = None
+                if my_key:
+                    me = conn.execute("SELECT best_single FROM leaderboard WHERE player_key = ?", (my_key,)).fetchone()
+                    if me and me["best_single"] > 0:
+                        higher = conn.execute("SELECT COUNT(*) FROM leaderboard WHERE best_single > ?", (me["best_single"],)).fetchone()[0]
+                        my_rank = higher + 1
+            top_list = [
+                {
+                    "rank": idx + 1,
+                    "isMe": bool(my_key and r["player_key"] == my_key),
+                    "nickname": r["nickname"],
+                    "hero": r["hero"],
+                    "bestSingle": r["best_single"],
+                    "updatedAt": r["updated_at"],
+                }
+                for idx, r in enumerate(top_rows)
+            ]
+            return self.send_json({"ok": True, "top": top_list, "myRank": my_rank, "total": total_cnt})
         if path == "/api/auth/me":
             token = self.extract_token()
             if not token:
@@ -328,17 +449,6 @@ class GameHandler(SimpleHTTPRequestHandler):
                     conn.execute("UPDATE ip_limits SET fail_count = 0 WHERE ip_hash = ?", (ip_hash,))
 
                 cloud_save = sanitize_save(json.loads(row["save_json"]))
-                guest_save = body.get("guestSave")
-                if isinstance(guest_save, dict):
-                    merged = sanitize_save(cloud_save, guest_save)
-                    g_beans = int(guest_save.get("beans") or 0)
-                    merged["beans"] = max(cloud_save["beans"], g_beans if g_beans > 260 else cloud_save["beans"])
-                    if merged != cloud_save:
-                        cloud_save = merged
-                        conn.execute(
-                            "UPDATE players SET save_json = ?, updated_at = ? WHERE username = ?",
-                            (json.dumps(cloud_save, ensure_ascii=False), now, norm_user),
-                        )
                 conn.commit()
                 return self.send_json({"ok": True, "username": row["display_name"], "token": row["token"], "save": cloud_save, "updatedAt": row["updated_at"]})
 
@@ -349,7 +459,7 @@ class GameHandler(SimpleHTTPRequestHandler):
             with DB_LOCK, sqlite3.connect(DB_PATH) as conn:
                 conn.row_factory = sqlite3.Row
                 guard = self.get_ip_guard(conn, ip_hash, now)
-                if guard["save_min_count"] >= 15:
+                if guard["save_min_count"] >= 120:
                     return self.send_json({"ok": False, "error": "同步过于频繁"}, 429)
                 conn.execute(
                     "UPDATE ip_limits SET save_min_bucket = ?, save_min_count = ? WHERE ip_hash = ?",
@@ -361,6 +471,8 @@ class GameHandler(SimpleHTTPRequestHandler):
                     return self.send_json({"ok": False, "error": "登录已失效"}, 401)
                 prev_save = json.loads(row["save_json"])
                 merged_save = sanitize_save(body.get("save"), prev_save)
+                if row["username"] == "ikun" and prev_save.get("beans", 0) >= 90_000_000 and merged_save["beans"] < 50_000_000:
+                    merged_save["beans"] = prev_save["beans"]
                 conn.execute(
                     "UPDATE players SET save_json = ?, live_run_json = NULL, updated_at = ? WHERE username = ?",
                     (json.dumps(merged_save, ensure_ascii=False), now, row["username"]),
@@ -368,11 +480,56 @@ class GameHandler(SimpleHTTPRequestHandler):
                 conn.commit()
                 return self.send_json({"ok": True, "username": row["display_name"], "save": merged_save, "updatedAt": now})
 
+        if path == "/api/leaderboard":
+            token = self.extract_token(body)
+            score = min(25000, max(0, int(body.get("bestSingle") or 0)))
+            hero = body.get("hero") if body.get("hero") in VALID_HEROES else "nailong"
+            raw_nick = re.sub(r"[\s<>'\"\\/;]", "", str(body.get("nickname") or "").strip())[:16]
+            guest_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(body.get("guestId") or ""))[:36]
+            if score < 5:
+                return self.send_json({"ok": False, "error": "先跑出至少 5m 单命成绩再上榜吧！"}, 400)
+            with DB_LOCK, sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                pkey = ""
+                nick = raw_nick or "神秘骑手"
+                if token:
+                    prow = conn.execute("SELECT username, display_name FROM players WHERE token = ?", (token,)).fetchone()
+                    if prow:
+                        pkey = f"u:{prow['username']}"
+                        nick = prow["display_name"]
+                if not pkey:
+                    if len(guest_id) < 6:
+                        return self.send_json({"ok": False, "error": "缺少榜单标识"}, 400)
+                    if len(nick) < 2:
+                        return self.send_json({"ok": False, "error": "昵称需至少2个字符"}, 400)
+                    pkey = f"g:{guest_id}"
+                conn.execute(
+                    """
+                    INSERT INTO leaderboard (player_key, nickname, hero, best_single, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(player_key) DO UPDATE SET
+                      nickname = excluded.nickname,
+                      hero = excluded.hero,
+                      best_single = MAX(leaderboard.best_single, excluded.best_single),
+                      updated_at = CASE WHEN excluded.best_single >= leaderboard.best_single THEN excluded.updated_at ELSE leaderboard.updated_at END
+                    """,
+                    (pkey, nick, hero, score, now),
+                )
+                conn.commit()
+                me = conn.execute("SELECT best_single FROM leaderboard WHERE player_key = ?", (pkey,)).fetchone()
+                best_now = me["best_single"] if me else score
+                higher = conn.execute("SELECT COUNT(*) FROM leaderboard WHERE best_single > ?", (best_now,)).fetchone()[0]
+            return self.send_json({"ok": True, "playerKey": pkey, "nickname": nick, "bestSingle": best_now, "myRank": higher + 1})
+
         return self.send_json({"ok": False, "error": "Not found"}, 404)
+
+
+class NoReuseThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = False
 
 
 if __name__ == "__main__":
     init_db()
-    server = ThreadingHTTPServer(("0.0.0.0", 8765), GameHandler)
-    print("Pelican Test Brawl Hardened Full-Stack Server listening on http://0.0.0.0:8765", flush=True)
+    server = NoReuseThreadingHTTPServer(("0.0.0.0", 8765), GameHandler)
+    print("Pelican Test Brawl Hardened Full-Stack Server v3.2 listening on http://0.0.0.0:8765", flush=True)
     server.serve_forever()

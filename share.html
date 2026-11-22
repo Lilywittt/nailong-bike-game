@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>分享 · 鹈鹕测试大乱斗</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    body {
+      min-height: 100vh;
+      background: #f8fafc;
+      color: #0f172a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .panel {
+      width: min(92vw, 356px);
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 24px;
+      padding: 22px 20px 18px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+    }
+    .qr-card {
+      width: 100%;
+      max-width: 296px;
+      border-radius: 16px;
+      overflow: hidden;
+      background: #ffffff;
+    }
+    .qr-card img {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .btn-row {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .btn {
+      width: 100%;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 11px 10px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      background: #ffffff;
+      color: #0f172a;
+      transition: background 0.15s ease, transform 0.08s ease;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn-primary {
+      background: #16a34a;
+      border-color: #16a34a;
+      color: #ffffff;
+    }
+    .btn-secondary {
+      background: #f1f5f9;
+      border-color: #e2e8f0;
+      color: #0f172a;
+    }
+    .btn-back {
+      background: transparent;
+      border-color: transparent;
+      color: #64748b;
+      font-size: 13px;
+      padding: 6px;
+    }
+    .tip {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: #16a34a;
+      min-height: 18px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <div class="qr-card">
+      <img id="svgPosterImg" src="/assets/promo_card.svg?v=5.6" alt="鹈鹕测试大乱斗二维码" />
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="copyLaunchBtn">复制链接转发</button>
+      <button class="btn btn-secondary" id="dlPngBtn">保存二维码图</button>
+    </div>
+    <div class="tip" id="statusTip"></div>
+    <button class="btn btn-back" id="returnGameBtn">返回游戏</button>
+  </div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const plat = params.get('plat') || '微信';
+    const mode = params.get('mode') || 'hub';
+    const dist = Number(params.get('dist') || 0);
+    const shareUrl = 'https://nailong.openwaifu-agent.uk';
+    const shareText = dist > 0
+      ? `我在《鹈鹕测试大乱斗》单命跑了 ${dist}m！扫码即玩：${shareUrl}`
+      : `《鹈鹕测试大乱斗》扫码即玩：${shareUrl}`;
+
+    let actionCompleted = false;
+    function markSharedDone() {
+      actionCompleted = true;
+      try {
+        localStorage.setItem('pelican_share_verified_v1', JSON.stringify({
+          plat,
+          mode,
+          ts: Date.now(),
+          ok: true
+        }));
+      } catch (_) {}
+      const retBtn = document.getElementById('returnGameBtn');
+      retBtn.className = 'btn btn-primary';
+      retBtn.textContent = mode === 'revive' ? '已分享 · 点击返回满血复活' : '返回游戏';
+    }
+
+    document.getElementById('copyLaunchBtn').addEventListener('click', () => {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(shareText).catch(() => {});
+      }
+      markSharedDone();
+      document.getElementById('statusTip').style.color = '#16a34a';
+      document.getElementById('statusTip').textContent = `链接已复制，发给${plat}好友即可`;
+      if (plat === '微信') {
+        try { window.location.href = 'weixin://'; } catch (_) {}
+      } else if (plat === 'QQ') {
+        window.open('https://connect.qq.com/widget/shareqq/index.html?url=' + encodeURIComponent(shareUrl) + '&title=' + encodeURIComponent('鹈鹕测试大乱斗'), '_blank');
+      } else if (plat === '抖音') {
+        window.open('https://www.douyin.com/', '_blank');
+      }
+    });
+
+    document.getElementById('dlPngBtn').addEventListener('click', () => {
+      const img = document.getElementById('svgPosterImg');
+      const cv = document.createElement('canvas');
+      cv.width = 880;
+      cv.height = 960;
+      const c = cv.getContext('2d');
+      c.fillStyle = '#ffffff';
+      c.fillRect(0, 0, 880, 960);
+      c.drawImage(img, 0, 0, 880, 960);
+      const a = document.createElement('a');
+      a.download = '鹈鹕测试大乱斗_二维码.png';
+      a.href = cv.toDataURL('image/png');
+      a.click();
+      markSharedDone();
+      document.getElementById('statusTip').style.color = '#16a34a';
+      document.getElementById('statusTip').textContent = '二维码图片已保存';
+    });
+
+    document.getElementById('returnGameBtn').addEventListener('click', () => {
+      if (mode === 'revive' && !actionCompleted) {
+        document.getElementById('statusTip').style.color = '#dc2626';
+        document.getElementById('statusTip').textContent = '请先点击「复制链接转发」或「保存二维码图」';
+        return;
+      }
+      if (window.opener && !window.opener.closed) {
+        try { window.opener.focus(); } catch (_) {}
+      }
+      window.close();
+    });
+  </script>
+</body>
+</html>

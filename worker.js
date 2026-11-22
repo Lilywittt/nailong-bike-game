@@ -3,13 +3,16 @@
 // Login Brute-Force Lockout (6 fails/10m), Signed Timing Ticket + Honeypot, 4KB Body Cap & Schema Whitelist.
 
 const DEFAULT_SAVE = {
-  beans: 260,
+  beans: 150,
+  dashEnergy: 0,
   bestDist: 0,
+  bestSingleRun: 0,
   maxCheckpoint: 0,
   selectedCheckpoint: 0,
   selectedHero: 'nailong',
-  unlocked: ['ikun', 'pelican', 'naiwa', 'nailong'],
-  mods: { claw: 0, nitro: 0, sawBumper: 0, mortarCat: 0 }
+  unlocked: ['ikun', 'pelican', 'naiwa', 'nailong', 'hakimi'],
+  mods: { claw: 0, nitro: 0, sawBumper: 0, mortarCat: 0 },
+  heroLv: { nailong: 1, ikun: 1, pelican: 1, naiwa: 1, hakimi: 1 }
 };
 
 const VALID_HEROES = new Set(['nailong', 'ikun', 'pelican', 'naiwa', 'hakimi']);
@@ -103,6 +106,7 @@ function sanitizeSave(raw, prev = null) {
   const s = (raw && typeof raw === 'object') ? raw : {};
   const p = (prev && typeof prev === 'object') ? prev : {};
   const bestDist = Math.min(999999, Math.max(0, Math.floor(Number(s.bestDist) || 0), Math.floor(Number(p.bestDist) || 0)));
+  const bestSingleRun = Math.min(999999, Math.max(0, Math.floor(Number(s.bestSingleRun) || 0), Math.floor(Number(p.bestSingleRun) || 0)));
   const maxCheckpoint = Math.min(
     999500,
     Math.max(
@@ -113,8 +117,8 @@ function sanitizeSave(raw, prev = null) {
     )
   );
   const beansVal = s.beans !== undefined
-    ? Math.min(9999999, Math.max(0, Math.floor(Number(s.beans) || 0)))
-    : Math.min(9999999, Math.max(260, Math.floor(Number(p.beans) || 260)));
+    ? Math.min(999999999, Math.max(0, Math.floor(Number(s.beans) || 0)))
+    : Math.min(999999999, Math.max(260, Math.floor(Number(p.beans) || 260)));
 
   const unlockedSet = new Set(DEFAULT_SAVE.unlocked);
   for (const arr of [p.unlocked, s.unlocked]) {
@@ -128,17 +132,30 @@ function sanitizeSave(raw, prev = null) {
   for (const k of ['claw', 'nitro', 'sawBumper', 'mortarCat']) {
     mods[k] = Math.min(3, Math.max(0, Math.floor(Number(sm[k]) || 0), Math.floor(Number(pm[k]) || 0)));
   }
+  const shl = (s.heroLv && typeof s.heroLv === 'object') ? s.heroLv : {};
+  const phl = (p.heroLv && typeof p.heroLv === 'object') ? p.heroLv : {};
+  const heroLv = {};
+  for (const h of ['nailong', 'ikun', 'pelican', 'naiwa', 'hakimi']) {
+    heroLv[h] = Math.min(6, Math.max(1, Math.floor(Number(shl[h]) || 1), Math.floor(Number(phl[h]) || 1)));
+  }
   const selCp = Math.min(maxCheckpoint, Math.max(0, Math.floor(Number(s.selectedCheckpoint ?? p.selectedCheckpoint) || 0)));
   const candHero = typeof s.selectedHero === 'string' ? s.selectedHero : p.selectedHero;
   const hero = VALID_HEROES.has(candHero) ? candHero : 'nailong';
+  const dashEnergy = s.dashEnergy !== undefined
+    ? Math.min(30, Math.max(0, Math.round((Number(s.dashEnergy) || 0) * 10) / 10))
+    : Math.min(30, Math.max(0, Math.round((Number(p.dashEnergy) || 0) * 10) / 10));
+
   return {
     beans: beansVal,
+    dashEnergy,
     bestDist,
+    bestSingleRun,
     maxCheckpoint,
     selectedCheckpoint: selCp,
     selectedHero: hero,
     unlocked: Array.from(unlockedSet),
-    mods
+    mods,
+    heroLv
   };
 }
 
@@ -174,6 +191,28 @@ async function getIpGuard(env, ipHash, nowMs) {
     if (row.save_min_bucket !== minBucket) { row.save_min_bucket = minBucket; row.save_min_count = 0; }
   }
   return row;
+}
+
+async function ensureLeaderboardTable(env) {
+  await env.DB.prepare(
+    'CREATE TABLE IF NOT EXISTS leaderboard (player_key TEXT PRIMARY KEY, nickname TEXT NOT NULL, hero TEXT NOT NULL, best_single INTEGER NOT NULL, updated_at INTEGER NOT NULL)'
+  ).run();
+}
+
+async function upsertLeaderboardEntry(env, playerKey, nickname, hero, bestSingle, nowMs) {
+  const sc = Math.min(25000, Math.max(0, Math.floor(Number(bestSingle) || 0)));
+  if (!playerKey || sc < 5) return;
+  const safeHero = VALID_HEROES.has(hero) ? hero : 'nailong';
+  await ensureLeaderboardTable(env);
+  await env.DB.prepare(
+    `INSERT INTO leaderboard (player_key, nickname, hero, best_single, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(player_key) DO UPDATE SET
+       nickname = excluded.nickname,
+       hero = excluded.hero,
+       best_single = MAX(leaderboard.best_single, excluded.best_single),
+       updated_at = CASE WHEN excluded.best_single >= leaderboard.best_single THEN excluded.updated_at ELSE leaderboard.updated_at END`
+  ).bind(playerKey, nickname, safeHero, sc, nowMs).run();
 }
 
 export default {
@@ -249,6 +288,7 @@ export default {
         'UPDATE ip_limits SET reg_day = ?, reg_day_count = ?, reg_total_count = ?, last_reg_ms = ? WHERE ip_hash = ?'
       ).bind(guard.reg_day, guard.reg_day_count + 1, guard.reg_total_count + 1, now, ipHash).run();
 
+      await upsertLeaderboardEntry(env, `u:${normUser}`, rawName, cleanSave.selectedHero, cleanSave.bestSingleRun, now);
       return jsonResp({ ok: true, username: rawName, token, save: cleanSave, updatedAt: now });
     }
 
@@ -291,16 +331,6 @@ export default {
       let cloudSave = DEFAULT_SAVE;
       try { cloudSave = sanitizeSave(JSON.parse(row.save_json), null); } catch (_) {}
 
-      if (body.guestSave && typeof body.guestSave === 'object') {
-        const merged = sanitizeSave(cloudSave, body.guestSave);
-        merged.beans = Math.max(cloudSave.beans, Number(body.guestSave.beans) > 260 ? Math.floor(Number(body.guestSave.beans)) : cloudSave.beans);
-        if (JSON.stringify(merged) !== JSON.stringify(cloudSave)) {
-          cloudSave = merged;
-          await env.DB.prepare('UPDATE players SET save_json = ?, updated_at = ? WHERE username = ?')
-            .bind(JSON.stringify(cloudSave), now, normUser).run();
-        }
-      }
-
       const token = row.token || randomHex(24);
       if (!row.token) {
         await env.DB.prepare('UPDATE players SET token = ? WHERE username = ?').bind(token, normUser).run();
@@ -328,7 +358,7 @@ export default {
       const now = Date.now();
       const ipHash = await getClientIpHash(request);
       const guard = await getIpGuard(env, ipHash, now);
-      if (guard.save_min_count >= 15) {
+      if (guard.save_min_count >= 120) {
         return jsonResp({ ok: false, error: '同步过于频繁' }, 429);
       }
       await env.DB.prepare('UPDATE ip_limits SET save_min_bucket = ?, save_min_count = ? WHERE ip_hash = ?')
@@ -341,30 +371,160 @@ export default {
       const mergedSave = sanitizeSave(body.save, prevSave);
       await env.DB.prepare('UPDATE players SET save_json = ?, live_run_json = NULL, updated_at = ? WHERE username = ?')
         .bind(JSON.stringify(mergedSave), now, row.username).run();
+      await upsertLeaderboardEntry(env, `u:${row.username}`, row.display_name, mergedSave.selectedHero, mergedSave.bestSingleRun, now);
       return jsonResp({ ok: true, username: row.display_name, save: mergedSave, updatedAt: now });
     }
 
-    const KV_HTML_KEY = 'pelican_brawl_html_v2';
-    const wantSync = url.searchParams.get('sync') === '1';
-    let html = wantSync ? null : await env.GAME_KV.get(KV_HTML_KEY);
-    if (!html) {
-      const ref = url.searchParams.get('sha') || 'main';
-      const ghUrl = 'https://raw.githubusercontent.com/Lilywittt/nailong-bike-game/' + encodeURIComponent(ref) + '/index.html?t=' + Date.now();
-      const resp = await fetch(ghUrl, { headers: { 'User-Agent': 'PelicanBrawlWorker/2.0' } });
-      if (resp.ok) {
-        html = await resp.text();
-        await env.GAME_KV.put(KV_HTML_KEY, html);
-      } else {
-        html = await env.GAME_KV.get(KV_HTML_KEY) || await env.GAME_KV.get('pelican_brawl_html_v1');
+    if (path === '/api/leaderboard' && request.method === 'GET') {
+      await ensureLeaderboardTable(env);
+      const myKey = String(url.searchParams.get('key') || '').trim().slice(0, 64);
+      // Backfill existing D1 players once if leaderboard is sparse
+      const pRes = await env.DB.prepare('SELECT username, display_name, save_json, updated_at FROM players ORDER BY updated_at DESC LIMIT 60').all();
+      for (const pr of (pRes.results || [])) {
+        try {
+          const sv = JSON.parse(pr.save_json);
+          const bs = Math.min(25000, Math.max(0, Math.floor(Number(sv.bestSingleRun) || 0)));
+          if (bs >= 5) {
+            await upsertLeaderboardEntry(env, `u:${pr.username}`, pr.display_name, sv.selectedHero || 'nailong', bs, pr.updated_at || Date.now());
+          }
+        } catch (_) {}
       }
+      const topRes = await env.DB.prepare(
+        'SELECT player_key, nickname, hero, best_single, updated_at FROM leaderboard WHERE best_single > 0 ORDER BY best_single DESC, updated_at ASC LIMIT 30'
+      ).all();
+      const cntRow = await env.DB.prepare('SELECT COUNT(*) AS cnt FROM leaderboard WHERE best_single > 0').first();
+      let myRank = null;
+      if (myKey) {
+        const me = await env.DB.prepare('SELECT best_single FROM leaderboard WHERE player_key = ?').bind(myKey).first();
+        if (me && me.best_single > 0) {
+          const hRow = await env.DB.prepare('SELECT COUNT(*) AS cnt FROM leaderboard WHERE best_single > ?').bind(me.best_single).first();
+          myRank = Number(hRow?.cnt || 0) + 1;
+        }
+      }
+      const top = (topRes.results || []).map((r, i) => ({
+        rank: i + 1,
+        isMe: Boolean(myKey && r.player_key === myKey),
+        nickname: r.nickname,
+        hero: r.hero,
+        bestSingle: r.best_single,
+        updatedAt: r.updated_at
+      }));
+      return jsonResp({ ok: true, top, myRank, total: Number(cntRow?.cnt || 0) });
     }
-    if (!html) return new Response('Game syncing, please refresh in a moment.', { status: 503 });
-    return new Response(html, {
-      status: 200,
-      headers: {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'no-cache'
+
+    if (path === '/api/leaderboard' && request.method === 'POST') {
+      const parsed = await readSafeJson(request, 2048);
+      if (parsed.err) return jsonResp({ ok: false, error: parsed.err }, parsed.status);
+      const body = parsed.body;
+      const now = Date.now();
+      const score = Math.min(25000, Math.max(0, Math.floor(Number(body.bestSingle) || 0)));
+      if (score < 5) return jsonResp({ ok: false, error: '先跑出至少 5m 单命成绩再上榜吧！' }, 400);
+      const hero = VALID_HEROES.has(body.hero) ? body.hero : 'nailong';
+      const rawNick = String(body.nickname || '').replace(/[\s<>'"\\/;]/g, '').slice(0, 16);
+      const guestId = String(body.guestId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 36);
+      const token = extractToken(request, body);
+
+      let pkey = '';
+      let nick = rawNick || '神秘骑手';
+      if (token) {
+        const prow = await env.DB.prepare('SELECT username, display_name FROM players WHERE token = ?').bind(token).first();
+        if (prow) {
+          pkey = `u:${prow.username}`;
+          nick = prow.display_name;
+        }
       }
-    });
+      if (!pkey) {
+        if (guestId.length < 6) return jsonResp({ ok: false, error: '缺少榜单标识' }, 400);
+        if (nick.length < 2) return jsonResp({ ok: false, error: '昵称需至少2个字符' }, 400);
+        pkey = `g:${guestId}`;
+      }
+      await upsertLeaderboardEntry(env, pkey, nick, hero, score, now);
+      const me = await env.DB.prepare('SELECT best_single FROM leaderboard WHERE player_key = ?').bind(pkey).first();
+      const bestNow = Number(me?.best_single || score);
+      const hRow = await env.DB.prepare('SELECT COUNT(*) AS cnt FROM leaderboard WHERE best_single > ?').bind(bestNow).first();
+      return jsonResp({ ok: true, playerKey: pkey, nickname: nick, bestSingle: bestNow, myRank: Number(hRow?.cnt || 0) + 1 });
+    }
+
+    const STATIC_BINARY_WHITELIST = {
+      '/audio/boss_bgm.m4a': 'audio/mp4',
+      '/audio/ngm.mp3': 'audio/mpeg',
+      '/audio/ji.mp3': 'audio/mpeg',
+      '/audio/jntm.mp3': 'audio/mpeg',
+      '/audio/ddj.m4a': 'audio/mp4',
+      '/audio/hakimi.m4a': 'audio/mp4',
+      '/audio/nailong.m4a': 'audio/mp4',
+      '/audio/manbo.m4a': 'audio/mp4',
+      '/assets/pay_alipay.jpg': 'image/jpeg',
+      '/assets/pay_wechat.jpg': 'image/jpeg',
+      '/assets/contact_wechat_qr.png': 'image/png',
+      '/assets/game_qr.png': 'image/png',
+      '/assets/promo_qr_square.png': 'image/png',
+      '/assets/boss_manbo.png': 'image/png',
+      '/assets/boss_manbo_meme.png': 'image/png'
+    };
+    if (request.method === 'GET' && STATIC_BINARY_WHITELIST[path]) {
+      const kvKey = 'bin_v2_' + path.replace(/[^a-zA-Z0-9_.-]/g, '_');
+      let buf = await env.GAME_KV.get(kvKey, { type: 'arrayBuffer' });
+      if (!buf) {
+        const ghAsset = 'https://raw.githubusercontent.com/Lilywittt/nailong-bike-game/main' + path;
+        const aResp = await fetch(ghAsset, { headers: { 'User-Agent': 'PelicanBrawlWorker/2.0' } });
+        if (aResp.ok) {
+          buf = await aResp.arrayBuffer();
+          await env.GAME_KV.put(kvKey, buf);
+        }
+      }
+      if (!buf) return new Response('Asset syncing', { status: 404 });
+      return new Response(buf, {
+        status: 200,
+        headers: {
+          'Content-Type': STATIC_BINARY_WHITELIST[path],
+          'Cache-Control': 'public, max-age=86400',
+          'Access-Control-Allow-Origin': '*'
+        }
+      });
+    }
+
+    const STATIC_TEXT_WHITELIST = {
+      '/': { file: '/index.html', mime: 'text/html; charset=utf-8', cache: 'no-cache' },
+      '/index.html': { file: '/index.html', mime: 'text/html; charset=utf-8', cache: 'no-cache' },
+      '/share.html': { file: '/share.html', mime: 'text/html; charset=utf-8', cache: 'no-cache' },
+      '/assets/promo_card.svg': { file: '/assets/promo_card.svg', mime: 'image/svg+xml; charset=utf-8', cache: 'public, max-age=3600' },
+      '/css/style.css': { file: '/css/style.css', mime: 'text/css; charset=utf-8', cache: 'public, max-age=300' },
+      '/js/config.js': { file: '/js/config.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
+      '/js/models.js': { file: '/js/models.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
+      '/js/audio.js': { file: '/js/audio.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
+      '/js/bosses.js': { file: '/js/bosses.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
+      '/js/cloud.js': { file: '/js/cloud.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
+      '/js/main.js': { file: '/js/main.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' }
+    };
+
+    if (request.method === 'GET' && STATIC_TEXT_WHITELIST[path]) {
+      const entry = STATIC_TEXT_WHITELIST[path];
+      const kvKey = 'txt_v3_' + entry.file.replace(/[^a-zA-Z0-9_.-]/g, '_');
+      const wantSync = url.searchParams.get('sync') === '1';
+      let txt = wantSync ? null : await env.GAME_KV.get(kvKey);
+      if (!txt) {
+        const ref = url.searchParams.get('sha') || 'main';
+        const ghUrl = 'https://raw.githubusercontent.com/Lilywittt/nailong-bike-game/' + encodeURIComponent(ref) + entry.file + '?t=' + Date.now();
+        const resp = await fetch(ghUrl, { headers: { 'User-Agent': 'PelicanBrawlWorker/3.1' } });
+        if (resp.ok) {
+          txt = await resp.text();
+          await env.GAME_KV.put(kvKey, txt);
+        } else {
+          txt = await env.GAME_KV.get(kvKey);
+        }
+      }
+      if (!txt) return new Response('Game module syncing, please refresh.', { status: 503 });
+      return new Response(txt, {
+        status: 200,
+        headers: {
+          'Content-Type': entry.mime,
+          'Cache-Control': entry.cache,
+          'Access-Control-Allow-Origin': '*'
+        }
+      });
+    }
+
+    return new Response('Not Found', { status: 404 });
   }
 };
