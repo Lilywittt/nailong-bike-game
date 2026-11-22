@@ -4,7 +4,7 @@
 // + Conservation-of-Value 3-Way Conflict Resolution across ALL devices & tabs!
 // ============================================================================
 
-import { VALID_HERO_IDS, BEAN_TALENTS } from './config.js?v=6.2';
+import { VALID_HERO_IDS, BEAN_TALENTS } from './config.js?v=6.2.5';
 
 export const SAVE_KEY = 'pelican_brawl_save_v1';
 export const AUTH_KEY = 'pelican_brawl_auth_v1';
@@ -18,7 +18,7 @@ const MOD_STEP_COSTS = { 0: 500, 1: 1100, 2: 2000 };
 
 export const defaultSave = {
   beans: 2000,
-  dashEnergy: 0,
+  dashEnergy: 10,
   bestDist: 0,
   bestSingleRun: 0,
   maxCheckpoint: 0,
@@ -72,7 +72,7 @@ export function normalizeSaveObj(parsed, fallback = defaultSave) {
 
   return {
     beans: parsed.beans !== undefined ? Math.max(0, Math.floor(Number(parsed.beans) || 0)) : defaultSave.beans,
-    dashEnergy: parsed.dashEnergy !== undefined ? Math.min(30, Math.max(0, Math.round((Number(parsed.dashEnergy) || 0) * 10) / 10)) : 0,
+    dashEnergy: parsed.dashEnergy !== undefined ? Math.min(30, Math.max(0, Math.round((Number(parsed.dashEnergy) || 0) * 10) / 10)) : defaultSave.dashEnergy,
     bestDist: bestD,
     bestSingleRun: bestSingle,
     maxCheckpoint: maxCp,

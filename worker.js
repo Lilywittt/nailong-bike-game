@@ -15,7 +15,7 @@ const TALENT_STEP_COSTS = { superCharge: 1000, maxHpPct: 10000, autoRegen: 20000
 
 const DEFAULT_SAVE = {
   beans: 2000,
-  dashEnergy: 0,
+  dashEnergy: 10,
   bestDist: 0,
   bestSingleRun: 0,
   maxCheckpoint: 0,
@@ -179,7 +179,7 @@ function sanitizeSave(raw, prev = null) {
   const hero = VALID_HEROES.has(candHero) ? candHero : 'nailong';
   const dashEnergy = s.dashEnergy !== undefined && s.dashEnergy !== null
     ? Math.min(30, Math.max(0, Math.round((Number(s.dashEnergy) || 0) * 10) / 10))
-    : Math.min(30, Math.max(0, Math.round((Number(p.dashEnergy) || 0) * 10) / 10));
+    : Math.min(30, Math.max(0, Math.round((Number(p.dashEnergy !== undefined ? p.dashEnergy : DEFAULT_SAVE.dashEnergy) || 0) * 10) / 10));
 
   return {
     beans: beansVal,
@@ -717,7 +717,10 @@ export default {
       '/assets/game_qr.png': 'image/png',
       '/assets/promo_qr_square.png': 'image/png',
       '/assets/boss_manbo.png': 'image/png',
-      '/assets/boss_manbo_meme.png': 'image/png'
+      '/assets/boss_manbo_meme.png': 'image/png',
+      '/assets/app_icon_320.png': 'image/png',
+      '/assets/apple-touch-icon.png': 'image/png',
+      '/assets/favicon.png': 'image/png'
     };
     if (request.method === 'GET' && STATIC_BINARY_WHITELIST[path]) {
       const kvKey = 'bin_v2_' + path.replace(/[^a-zA-Z0-9_.-]/g, '_');

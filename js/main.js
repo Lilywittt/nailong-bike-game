@@ -23,7 +23,7 @@ import {
   getTalentLvFromSave,
   getSuperChargeSpeedMultFromSave,
   getAutoRegenPer5sFromSave
-} from './config.js?v=6.2';
+} from './config.js?v=6.2.5';
 
 import {
   buildAllSculptedAssets,
@@ -31,7 +31,7 @@ import {
   drawSpaldingWheelOn,
   drawSculptedBikeAndHero,
   getEnemySpriteKey
-} from './models.js?v=6.2';
+} from './models.js?v=6.2.5';
 
 import {
   ensureAudio,
@@ -46,9 +46,9 @@ import {
   stopBossBgm,
   playSfx,
   tickProceduralBgm
-} from './audio.js?v=6.2';
+} from './audio.js?v=6.2.5';
 
-import { createCloudStore } from './cloud.js?v=6.2';
+import { createCloudStore } from './cloud.js?v=6.2.5';
 import {
   initBossCustomState,
   clearBossTransientHazards,
@@ -57,7 +57,7 @@ import {
   handlePlayerBossInteraction,
   updateBossEngine,
   renderBossArenaAndModel
-} from './bosses.js?v=6.2';
+} from './bosses.js?v=6.2.5';
 
 // Zero-allocation in-place array compaction (eliminates 1,400+ GC array allocations/sec!)
 function compactInPlace(arr, keepFn) {
@@ -566,10 +566,10 @@ function refreshHubUI() {
   if (preDeathBoost400) preDeathBoost400.classList.toggle('active', preSelectedDeathBoost === 400);
   if (preDeathBoost800) preDeathBoost800.classList.toggle('active', preSelectedDeathBoost === 800);
 
-  // 5. Chargeable Hold-to-Ram Hyper Dash Shop Card (10000🌿 per 10s charge, max 3 charges = 30.0s!)
+  // 5. Chargeable Hold-to-Ram Hyper Dash Shop Card (10000🌿 per 10s charge, max 3 charges = 30.0s, 1 free starter!)
   const curDashE = Math.min(30, Math.max(0, Number(s.dashEnergy) || 0));
   const stockCnt = (curDashE / 10).toFixed(1);
-  if (hyperStockTxt) hyperStockTxt.textContent = `当前储备：${stockCnt} / 3 个（共 ${curDashE.toFixed(1)}s · 仅限购买）`;
+  if (hyperStockTxt) hyperStockTxt.textContent = `当前储备：${stockCnt} / 3 个（共 ${curDashE.toFixed(1)}s · 开局赠1个）`;
   if (hyperBuyBtn) {
     if (curDashE >= 29.95) {
       hyperBuyBtn.textContent = '✨ 已满 3/3';
@@ -675,7 +675,7 @@ if (hyperBuyBtn) {
     const s = store.save;
     const curE = Math.min(30, Math.max(0, Number(s.dashEnergy) || 0));
     if (curE >= 29.95) {
-      showToast('✨ 究极霸王超级冲刺已达持有上限 (3/3)!');
+      showToast('✨ 超级霸王究极冲刺已达持有上限 (3/3)!');
       return;
     }
     if (s.beans < 10000) {
@@ -686,7 +686,7 @@ if (hyperBuyBtn) {
     s.dashEnergy = Math.min(30, Math.round((curE + 10) * 10) / 10);
     store.markMutatedAndSave(true);
     playSfx('crate');
-    showToast(`☄️ 购入究极霸王超级冲刺! 当前储备 ${(s.dashEnergy / 10).toFixed(1)}/3`);
+    showToast(`☄️ 购入超级霸王究极冲刺! 当前储备 ${(s.dashEnergy / 10).toFixed(1)}/3`);
     refreshHubUI();
   });
 }
@@ -1256,7 +1256,7 @@ function activateWorldProp(def) {
 
 function refreshBuffChips() {
   const list = [];
-  if (player.hyperDashActive) list.push(`☄️ 究极霸王超级冲刺 ${(10 - player.hyperSessionSec).toFixed(1)}s`);
+  if (player.hyperDashActive) list.push(`☄️ 超级霸王究极冲刺 ${(10 - player.hyperSessionSec).toFixed(1)}s`);
   if (headStartTargetDist > 0) {
     list.push(deathDashActive ? `🔥 死亡终极冲刺 → ${headStartTargetDist}m` : `🚀 开局狂飙 → ${headStartTargetDist}m`);
   } else if (runStats && runStats.deathDashMeters > 0 && !runStats.deathDashUsed) {
@@ -1354,7 +1354,8 @@ function startNewRun(heroId, startDistMeters = 0, boostMeters = 0) {
   if (reviveStatusHint) reviveStatusHint.classList.add('hidden-block');
   nextBossDist = initDist + 150;
   nextTruckDist = initDist + 145;
-  nextPropDist = initDist + 115 + Math.floor(Math.random() * 55);
+  nextPropDist = initDist + 58;
+  runStats.firstSkyPropSpawned = false;
   nextShieldDist = initDist + 290;
   nextHealDist = initDist + 360;
   nextFlagDist = (Math.floor(initDist / 500) + 1) * 500;
@@ -1568,7 +1569,7 @@ function pauseGame(wantHyperShop = false) {
   pauseBossBgm();
   bankRunProgress(true);
   if (pauseModalTitle) {
-    pauseModalTitle.textContent = wantHyperShop ? '☄️ 冲刺耗尽 · 局内紧急补给' : '⏸️ 游戏暂停';
+    pauseModalTitle.textContent = wantHyperShop ? '☄️ 超级霸王究极冲刺 · 局内补给' : '⏸️ 游戏暂停';
   }
   if (pauseResumeBtn) pauseResumeBtn.textContent = '▶️ 继续游戏';
   refreshPauseHyperShopUI(wantHyperShop);
@@ -1581,7 +1582,7 @@ if (pauseBuyHyperBtn) {
     const s = store.save;
     const curE = Math.min(30, Math.max(0, Number(s.dashEnergy) || 0));
     if (curE >= 29.95) {
-      showToast('✨ 究极霸王超级冲刺已满 (3/3)!');
+      showToast('✨ 超级霸王究极冲刺已满 (3/3)!');
       return;
     }
     if (s.beans < 10000) {
@@ -1913,8 +1914,19 @@ function trySpawnTrackPropsAt(chunkDist, spawnX) {
   if (player.tempShieldHp <= 0 && chunkDist >= nextShieldDist) {
     nextShieldDist = chunkDist + 520 + Math.floor(Math.random() * 180) + Math.floor(runStats.singleRunDist * 0.18);
     const shx = spawnX + 60;
-    const shy = getBaseSurfaceY(shx) - 96;
-    worldProps.push({ x: shx, y: shy, baseY: shy, def: TIMED_SHIELD_PROP, taken: false, phase: Math.random() * 6 });
+    const shRoadY = getBaseSurfaceY(shx);
+    const shPara = Math.random() < 0.50;
+    const shy = shPara ? (shRoadY - 330) : (shRoadY - 96);
+    worldProps.push({
+      x: shx,
+      y: shy,
+      baseY: shy,
+      parachute: shPara,
+      chuteCol: '#38bdf8',
+      def: TIMED_SHIELD_PROP,
+      taken: false,
+      phase: Math.random() * 6
+    });
   }
 
   // 1B. Scarce Gradual-Regen Boba (720~940m + steep distance stretch, ONLY when HP < 65%!)
@@ -1932,19 +1944,22 @@ function trySpawnTrackPropsAt(chunkDist, spawnX) {
     }
   }
 
-  // 2. Rich Track Props (Spawn reliably every 130~190m even during Hyper Dash or active buffs!)
+  // 2. Rich Track Props (First prop guaranteed sky-floating parachute airdrop; ~68% sky-drifting thereafter!)
   if (chunkDist >= nextPropDist) {
-    nextPropDist = chunkDist + 130 + Math.floor(Math.random() * 60);
-    const isParachute = Math.random() < 0.58;
+    nextPropDist = chunkDist + 125 + Math.floor(Math.random() * 55);
+    const isParachute = !runStats.firstSkyPropSpawned || Math.random() < 0.68;
+    runStats.firstSkyPropSpawned = true;
     const px = spawnX + 165;
     const roadY = getBaseSurfaceY(px);
-    const py = isParachute ? (roadY - 195) : (roadY - 94);
+    const py = isParachute ? (roadY - 330) : (roadY - 94);
     const pick = WORLD_PROP_POOL[Math.floor(Math.random() * WORLD_PROP_POOL.length)];
+    const chutePalette = ['#ef4444', '#f97316', '#3b82f6', '#a855f7'];
     worldProps.push({
       x: px,
       y: py,
       baseY: py,
       parachute: isParachute,
+      chuteCol: chutePalette[Math.floor(Math.random() * chutePalette.length)],
       def: pick,
       taken: false,
       phase: Math.random() * 6
@@ -2343,8 +2358,8 @@ function syncControlsUI() {
     const fillPct = Math.round((curE / 30) * 100);
     setStyleCached('hFillW', hyperFillBar, 'width', `${fillPct}%`);
     const hTxt = player.hyperDashActive
-      ? `☄️ 冲刺中 ${(10 - player.hyperSessionSec).toFixed(1)}s (松手停)`
-      : (isEmpty ? '☄️ 冲刺 0/3 (点此购买)' : `☄️ 按住冲刺 (${(curE / 10).toFixed(1)}/3)`);
+      ? `☄️ 超级霸王究极冲刺 ${(10 - player.hyperSessionSec).toFixed(1)}s`
+      : (isEmpty ? '☄️ 超级霸王究极冲刺 0/3 (点此补给)' : `☄️ 超级霸王究极冲刺 (${(curE / 10).toFixed(1)}/3)`);
     setTextCached('hLbl', hyperDashLbl, hTxt);
   }
 
@@ -2402,7 +2417,7 @@ function onHyperDashPress() {
     playSfx('hyper');
     shakeTime = 0.20; shakeMag = 10;
     pushCapped(shockwaves, { x: player.x + 25, y: player.y - 45, r: 16, maxR: 280, life: 0.32, color: '#fde047', harmless: false }, 12);
-    addPopup('☄️ 究极霸王超级冲刺!! (松手即停)', player.x + 40, player.y - 105, '#fde047', 20);
+    addPopup('☄️ 超级霸王究极冲刺!! (松手即停)', player.x + 40, player.y - 105, '#fde047', 20);
   }
   syncControlsUI();
 }
@@ -3980,20 +3995,27 @@ function update(realDt) {
 
   spawnWorldAhead();
 
-  // Pickup Props (Includes Slowly Floating Sky-Parachute Airdrops!)
-  const propTouchR = (player.giantTimer > 0 || player.hyperDashActive) ? 95 : 68;
+  // Pickup Props (Includes Sky-Parachute Airdrops that hold high in the sky until inside the visible screen!)
+  const camForProps = getCamera();
+  const skyDropTriggerWX = Math.min(camForProps.camX + (W / camForProps.worldScale) * 0.90, player.x + 650);
+  const propTouchR = (player.giantTimer > 0 || player.hyperDashActive) ? 95 : 72;
   for (let i = 0; i < worldProps.length; i++) {
     const wp = worldProps[i];
     if (wp.taken) continue;
     wp.phase += dt * 3.4;
     if (wp.parachute) {
-      wp.x += player.vx * 0.56 * dt + Math.sin(wp.phase) * 26 * dt;
-      wp.y += 40 * dt; // Floats gently down from the sky!
-      const landingY = getBaseSurfaceY(wp.x) - 52;
-      if (wp.y >= landingY) {
-        wp.y = landingY;
-        wp.baseY = landingY;
-        wp.parachute = false;
+      if (wp.x > skyDropTriggerWX) {
+        // Hold high in the sky while off-screen ahead so it visibly floats down across the player's screen!
+        wp.y = getBaseSurfaceY(wp.x) - 330;
+      } else {
+        wp.x += player.vx * 0.54 * dt + Math.sin(wp.phase * 1.15) * 42 * dt;
+        wp.y += 108 * dt; // Drifts smoothly down from the sky right in front of the rider!
+        const landingY = getBaseSurfaceY(wp.x) - 56;
+        if (wp.y >= landingY) {
+          wp.y = landingY;
+          wp.baseY = landingY;
+          wp.parachute = false;
+        }
       }
     } else if (wp.def.id === 'heal_boba') {
       const dx = wp.x - player.x, dy = wp.y - (player.y - 48);
@@ -4808,15 +4830,22 @@ function render() {
     ctx.save();
     ctx.translate(wp.x, wp.y);
     if (wp.parachute) {
-      const sway = Math.sin(wp.phase) * 0.14;
+      const sway = Math.sin(wp.phase * 1.15) * 0.17;
       ctx.rotate(sway);
-      // Parachute cords & red-white striped canopy!
-      ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(-28, -36); ctx.lineTo(-10, -8); ctx.moveTo(28, -36); ctx.lineTo(10, -8); ctx.moveTo(0, -40); ctx.lineTo(0, -10); ctx.stroke();
-      ctx.fillStyle = '#ef4444'; ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2.6;
-      ctx.beginPath(); ctx.arc(0, -36, 30, Math.PI, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+      // Parachute rigging cords & vivid striped canopy!
+      ctx.strokeStyle = '#f8fafc'; ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(-33, -40); ctx.lineTo(-11, -8);
+      ctx.moveTo(33, -40); ctx.lineTo(11, -8);
+      ctx.moveTo(-12, -43); ctx.lineTo(-4, -9);
+      ctx.moveTo(12, -43); ctx.lineTo(4, -9);
+      ctx.stroke();
+      ctx.fillStyle = wp.chuteCol || '#ef4444';
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 2.8;
+      ctx.beginPath(); ctx.arc(0, -40, 35, Math.PI, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
       ctx.fillStyle = '#ffffff';
-      ctx.beginPath(); ctx.ellipse(0, -50, 11, 15, 0, Math.PI, 0); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(0, -56, 13, 18, 0, Math.PI, 0); ctx.closePath(); ctx.fill();
     }
     ctx.strokeStyle = haloCol;
     ctx.lineWidth = 3;
@@ -5066,6 +5095,14 @@ try {
       if ((store.save.maxCheckpoint || 0) > 15000) store.save.maxCheckpoint = 1500;
       if ((store.save.bestDist || 0) > 15000) store.save.bestDist = Math.min(store.save.bestDist, 2000);
       if ((store.save.bestSingleRun || 0) > 15000) store.save.bestSingleRun = 0;
+      store.markMutatedAndSave(false);
+    }
+  }
+  // One-time starter gift: grant 1 free 超级霸王究极冲刺 (10.0s = 1.0/3) to existing guest local saves!
+  if (!localStorage.getItem('pelican_starter_bawang_v1')) {
+    localStorage.setItem('pelican_starter_bawang_v1', '1');
+    if (!store.auth.token && (Number(store.save.dashEnergy) || 0) < 10) {
+      store.save.dashEnergy = Math.min(30, Math.round(((Number(store.save.dashEnergy) || 0) + 10) * 10) / 10);
       store.markMutatedAndSave(false);
     }
   }

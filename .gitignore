@@ -1,3 +1,6 @@
+# Local payment secrets & local SQLite databases (NEVER commit to Git!)
+.env
+.env.*
 *.db
 *.db-journal
 *.db-wal
