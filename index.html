@@ -6,7 +6,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>鹈鹕测试大乱斗</title>
-  <link rel="stylesheet" href="/css/style.css?v=5.6" />
+  <link rel="stylesheet" href="/css/style.css?v=6.2" />
 </head>
 <body>
   <canvas id="gameCanvas"></canvas>
@@ -35,7 +35,6 @@
         <div class="hp-main-fill" id="hpMainFill"></div>
         <span class="hp-bar-txt" id="hpText">❤️ 生命 100 / 100 HP</span>
       </div>
-      <button class="hud-heal-pill" id="hudHealBtn" title="5000绿豆回100血 (每局限3次)">💊+100 (3/3)</button>
       <span class="shield-tag" id="shieldText"></span>
     </div>
 
@@ -68,15 +67,19 @@
 
   <!-- Optional 1-Tap Head-Start Rocket Buttons at Run Start -->
   <div id="quickDashWrap" class="hidden">
-    <button class="dash-pill" id="inRunDash400">🚀 冲刺400m (150🌿)</button>
-    <button class="dash-pill" id="inRunDash800">☄️ 终极冲800m (280🌿)</button>
+    <button class="dash-pill" id="inRunDash400">🚀 开局冲400m (1000🌿)</button>
+    <button class="dash-pill" id="inRunDash800">☄️ 开局冲800m (2000🌿)</button>
   </div>
 
-  <!-- CLEAN CONTROLS: Left = ☄️ 按住无敌冲刺 + ⬆️ 起跳 | Right = ✨ 天赋技能 + 🐔 铁山靠 -->
+  <!-- CLEAN CONTROLS: Left = 🧰 急救包 + ☄️ 按住无敌冲刺(Shift) + ⬆️ 起跳 | Right = ✨ 天赋技能 + 🐔 铁山靠 -->
   <div class="controls-layer">
     <div class="ctrl-left">
       <div class="ctrl-left-col">
-        <button class="hyper-hold-btn" id="hyperDashBtn">
+        <button class="medkit-btn" id="hudHealBtn" title="5000绿豆紧急回100血 (每局限3次 · 电脑快捷键 H)">
+          <span>🧰</span>
+          <span id="hudHealLbl">急救包 +100 (3/3)</span>
+        </button>
+        <button class="hyper-hold-btn" id="hyperDashBtn" title="电脑端可按住 Shift 触发">
           <div class="hyper-fill-bar" id="hyperFillBar"></div>
           <span class="hyper-txt" id="hyperDashLbl">☄️ 按住冲刺 (0/3)</span>
         </button>
@@ -147,6 +150,15 @@
         <button class="hero-hp-up-btn" id="heroHpUpBtn">⬆️ 升至94HP (1000🌿)</button>
       </div>
 
+      <!-- Permanent Green-Bean Talent Tree Entry Bar -->
+      <div class="talent-hub-bar" id="talentHubBar">
+        <div class="thb-left">
+          <span class="thb-title">🌟 绿豆永久天赋</span>
+          <span class="thb-sub" id="talentHubSummary">🌈充能+0% · ❤️血限+0% · 💚回血0/5s</span>
+        </div>
+        <button class="talent-open-btn" id="talentOpenBtn">➕ 点天赋</button>
+      </div>
+
       <!-- 4 Rare Prop Duration Upgrades + 10000🌿 Chargeable Hold-to-Ram Hyper Dash -->
       <div class="shop-grid" id="shopGrid"></div>
 
@@ -158,15 +170,25 @@
         <button class="hsb-buy-btn" id="hyperBuyBtn">➕ 购入1个 (10000🌿)</button>
       </div>
 
-      <!-- Pre-Run Head-Start Toggle -->
+      <!-- Pre-Run Head-Start & Death-Dash Prop Toggles (1000🌿 / 2000🌿) -->
       <div class="boost-row">
         <div class="boost-card" id="preBoost400">
           <span>🚀 开局冲400m</span>
-          <span style="color:#15803d;">150🌿</span>
+          <span style="color:#15803d;">1000🌿</span>
         </div>
         <div class="boost-card" id="preBoost800">
-          <span>☄️ 终极冲800m</span>
-          <span style="color:#15803d;">280🌿</span>
+          <span>☄️ 开局冲800m</span>
+          <span style="color:#15803d;">2000🌿</span>
+        </div>
+      </div>
+      <div class="boost-row">
+        <div class="boost-card" id="preDeathBoost400">
+          <span>🔥 死亡冲400m</span>
+          <span style="color:#b91c1c;">1000🌿</span>
+        </div>
+        <div class="boost-card" id="preDeathBoost800">
+          <span>💀 死亡冲800m</span>
+          <span style="color:#b91c1c;">2000🌿</span>
         </div>
       </div>
 
@@ -244,9 +266,14 @@
         <span id="goBossKills">⚔️ 击败首领 0</span>
       </div>
 
-      <!-- Simple Clean Share-Image-to-Revive (Zero Redirects, Zero Detection Hassle!) -->
+      <div class="go-btn-row" id="goDeathDashRow" style="margin-bottom:2px;">
+        <button class="pause-btn" id="goDeath400Btn" style="background:#fee2e2;color:#991b1b;font-size:11.5px;">🔥 死亡冲400m (1000🌿)</button>
+        <button class="pause-btn" id="goDeath800Btn" style="background:#fecaca;color:#7f1d1d;font-size:11.5px;">💀 死亡冲800m (2000🌿)</button>
+      </div>
+
+      <!-- Simple Clean Share-Image-or-Link-to-Revive (Zero Redirects, Zero Detection Hassle!) -->
       <div class="revive-share-card" id="reviveShareCard" style="padding:8px 10px;">
-        <button class="pause-btn primary" id="goOpenShareBtn">🎁 保存分享图 · 满血复活</button>
+        <button class="pause-btn primary" id="goOpenShareBtn">🎁 分享图片/链接 · 满血复活</button>
       </div>
 
       <div class="revive-used-note hidden-block" id="reviveUsedNote">
@@ -343,22 +370,39 @@
     </div>
   </div>
 
-  <!-- CLEAN MINIMALIST IN-PAGE SHARE IMAGE MODAL (Zero Redirects / Zero Clutter!) -->
+  <!-- PERMANENT GREEN-BEAN TALENT UPGRADE MODAL -->
+  <div class="overlay hidden" id="talentOverlay">
+    <div class="modal-card" style="max-width:386px;">
+      <div class="modal-head">
+        <span class="modal-title">🌟 绿豆永久天赋</span>
+        <div style="display:flex;gap:7px;align-items:center;">
+          <span class="wallet-chip">🌿 <span id="talentWalletTxt">0</span></span>
+          <button class="close-x-btn" id="talentCloseBtn">✕</button>
+        </div>
+      </div>
+      <div class="talent-list-box" id="talentListBox"></div>
+    </div>
+  </div>
+
+  <!-- CLEAN MINIMALIST IN-PAGE SHARE MODAL (Supports BOTH Poster Image & Direct Link!) -->
   <div class="overlay hidden" id="shareOverlay">
-    <div class="modal-card" style="max-width:348px;background:#ffffff;border:1px solid #e5e7eb;box-shadow:0 18px 45px rgba(15,23,42,0.32);padding:18px 16px;gap:12px;">
+    <div class="modal-card" style="max-width:356px;background:#ffffff;border:1px solid #e5e7eb;box-shadow:0 18px 45px rgba(15,23,42,0.32);padding:18px 16px;gap:11px;">
       <div class="modal-head" style="border-bottom:none;padding-bottom:0;">
-        <span class="modal-title" style="font-size:15px;color:#0f172a;">📤 保存分享图</span>
+        <span class="modal-title" style="font-size:15px;color:#0f172a;">📤 分享《鹈鹕测试大乱斗》</span>
         <button class="close-x-btn" id="shareCloseBtn">✕</button>
       </div>
-      <div style="width:100%;max-width:276px;margin:0 auto;border-radius:16px;overflow:hidden;border:1px solid #f1f5f9;background:#ffffff;">
-        <img id="inPageSharePosterImg" src="/assets/promo_card.svg?v=5.7" alt="鹈鹕测试大乱斗二维码分享图" style="width:100%;height:auto;display:block;" />
+      <div style="width:100%;max-width:268px;margin:0 auto;border-radius:16px;overflow:hidden;border:1px solid #f1f5f9;background:#ffffff;">
+        <img id="inPageSharePosterImg" src="/assets/promo_card.svg?v=6.2" alt="鹈鹕测试大乱斗二维码分享图" style="width:100%;height:auto;display:block;" />
       </div>
-      <div id="shareSavedHint" style="font-size:12px;font-weight:700;color:#16a34a;text-align:center;min-height:4px;"></div>
-      <button class="pause-btn primary" id="shareSaveImgBtn">💾 保存图片</button>
+      <div id="shareSavedHint" style="font-size:12px;font-weight:700;color:#16a34a;text-align:center;min-height:16px;"></div>
+      <div class="share-btn-grid">
+        <button class="pause-btn primary" id="shareSaveImgBtn">🖼️ 保存分享图</button>
+        <button class="pause-btn" id="shareCopyLinkBtn" style="background:#0ea5e9;color:#ffffff;">🔗 复制链接</button>
+      </div>
       <button class="pause-btn warn hidden-block" id="shareReviveReadyBtn">▶️ 点击开始复活</button>
     </div>
   </div>
 
-  <script type="module" src="/js/main.js?v=5.6"></script>
+  <script type="module" src="/js/main.js?v=6.2"></script>
 </body>
 </html>

@@ -9,8 +9,8 @@
 //     telegraphs physically, and can be countered by Jump, 🐔铁山靠, Skills & Props!
 // ============================================================================
 
-import { drawModelOn, drawSpaldingWheelOn } from './models.js?v=5.6';
-import { playSfx, playCriticalMomentVoice } from './audio.js?v=5.6';
+import { drawModelOn, drawSpaldingWheelOn } from './models.js?v=6.2';
+import { playSfx, playCriticalMomentVoice } from './audio.js?v=6.2';
 
 export function initBossCustomState(boss, playerX) {
   boss.mech = 'idle';
@@ -118,7 +118,7 @@ export function handlePlayerBossInteraction(boss, env, triggerType) {
         const wy = getGroundY(o.x);
         spawnShockwave(o.x, wy - 55, 185, '#38bdf8');
         const full = boss.wallsBroken >= 2;
-        const dmg = Math.round(boss.maxHp * (full ? 0.22 : 0.08));
+        const dmg = (full ? 26 : 14);
         if (full) {
           boss.mech = 'idle';
           boss.mechTimer = 1.8;
@@ -143,6 +143,20 @@ export function handlePlayerBossInteraction(boss, env, triggerType) {
         player.actionCd = 0;
         playSfx('parry');
         addPopup('↩️ 反击!', o.x, o.y - 36, '#fde047', 19);
+        return true;
+      }
+    }
+
+    // 🐱 Swat Boss Hakimi's Bouncing Mini Round-Head Maodie ("小圆头耄耋")!
+    if (o.type === 'boss_maodie' && !o.reflected && (triggerType === 'parry' || triggerType === 'skill' || triggerType === 'projectile')) {
+      if (Math.abs(o.x - player.x) < 245) {
+        o.reflected = true;
+        o.vx = player.vx + 740;
+        o.vy = -240;
+        player.invulnTimer = Math.max(player.invulnTimer, 0.38);
+        player.actionCd = 0;
+        playSfx('parry');
+        spawnBeans(o.x, o.y, 2, 1);
         return true;
       }
     }
@@ -184,7 +198,7 @@ export function handlePlayerBossInteraction(boss, env, triggerType) {
         boss.relVx = -290;
         player.invulnTimer = Math.max(player.invulnTimer, 0.85);
         playSfx('crater');
-        const dmg = Math.round(boss.maxHp * 0.24);
+        const dmg = 26;
         spawnShockwave(o.x, getGroundY(o.x) - 40, 290, '#ef4444');
         addPopup(`⚡-${dmg}!`, o.x, getGroundY(o.x) - 105, '#fde047', 20);
         hitBoss(dmg, true, true);
@@ -203,7 +217,7 @@ export function handlePlayerBossInteraction(boss, env, triggerType) {
         boss.recoilX = 110;
         playSfx('crate');
         playCriticalMomentVoice('boss_clash_parry', 'manbo_queen');
-        const dmg = Math.round(boss.maxHp * 0.24);
+        const dmg = 26;
         spawnShockwave(boss.worldX, getGroundY(boss.worldX) - 52 + boss.yOff, 280, '#fde047');
         addPopup(`⚡-${dmg}!`, boss.worldX - 20, getGroundY(boss.worldX) - 115, '#fde047', 20);
         hitBoss(dmg, true, true);
@@ -221,7 +235,7 @@ export function handlePlayerBossInteraction(boss, env, triggerType) {
         boss.stunTimer = 1.8;
         boss.recoilX = 120;
         playSfx('crate');
-        const dmg = Math.round(boss.maxHp * 0.26);
+        const dmg = 28;
         spawnShockwave(boss.worldX, getGroundY(boss.worldX) - 55, 310, '#38bdf8');
         spawnBeans(o.x, oy, 8, 2);
         addPopup(`⚡-${dmg}!`, o.x, oy - 35, '#fde047', 20);
@@ -262,7 +276,7 @@ export function handlePlayerBossInteraction(boss, env, triggerType) {
         player.invulnTimer = Math.max(player.invulnTimer, 0.95);
         playSfx('crate');
         playCriticalMomentVoice('boss_clash_parry', 'kun_mecha');
-        const dmg = Math.round(boss.maxHp * 0.26);
+        const dmg = 28;
         spawnShockwave(hoopX, hoopY, 290, '#fb923c');
         spawnBeans(hoopX, hoopY + 25, 8, 2);
         grantShield(15, 5.5, false);
@@ -279,7 +293,7 @@ export function handlePlayerBossInteraction(boss, env, triggerType) {
         boss.relVx = 320;
         player.invulnTimer = Math.max(player.invulnTimer, 0.85);
         playSfx('parry');
-        const dmg = Math.round(boss.maxHp * 0.22);
+        const dmg = 24;
         spawnShockwave(player.x + 55, player.y - 45, 260, '#fde047');
         addPopup(`⚡-${dmg}!`, boss.worldX - 25, getGroundY(boss.worldX) - 105, '#fde047', 20);
         hitBoss(dmg, true, true);
@@ -298,7 +312,7 @@ export function handlePlayerBossInteraction(boss, env, triggerType) {
       player.invulnTimer = Math.max(player.invulnTimer, 0.85);
       playSfx('parry');
       playCriticalMomentVoice('boss_clash_parry', 'dagou_jiao');
-      const dmg = Math.round(boss.maxHp * 0.22);
+      const dmg = 24;
       spawnShockwave(player.x - 32, player.y - 32, 230, '#fde047');
       addPopup(`⚡-${dmg}!`, player.x - 25, player.y - 96, '#fde047', 20);
       hitBoss(dmg, true, true);
@@ -320,7 +334,7 @@ export function handlePlayerBossInteraction(boss, env, triggerType) {
       player.actionCd = 0;
       playSfx('parry');
       playCriticalMomentVoice('boss_clash_parry', 'manbo_queen');
-      const dmg = Math.round(boss.maxHp * 0.23);
+      const dmg = 26;
       spawnShockwave(boss.worldX, by, 250, '#a78bfa');
       addPopup(`⚡-${dmg}!`, boss.worldX, by - 55, '#fde047', 20);
       hitBoss(dmg, true, true);
@@ -338,7 +352,7 @@ export function handlePlayerBossInteraction(boss, env, triggerType) {
       boss.vy = -180;
       player.invulnTimer = Math.max(player.invulnTimer, 0.85);
       playSfx('parry');
-      const dmg = Math.round(boss.maxHp * 0.23);
+      const dmg = 26;
       spawnShockwave(boss.worldX, getGroundY(boss.worldX) - 50 + boss.yOff, 250, '#4ade80');
       addPopup(`⚡-${dmg}!`, boss.worldX, getGroundY(boss.worldX) - 110, '#fde047', 20);
       hitBoss(dmg, true, true);
@@ -354,7 +368,7 @@ export function handlePlayerBossInteraction(boss, env, triggerType) {
     boss.recoilX = 110;
     player.invulnTimer = Math.max(player.invulnTimer, 0.85);
     playSfx('parry');
-    const dmg = Math.round(boss.maxHp * 0.22);
+    const dmg = 24;
     spawnShockwave(player.x + 65, player.y - 38, 240, '#ec4899');
     addPopup(`⚡-${dmg}!`, boss.worldX - 30, getGroundY(boss.worldX) - 105, '#f472b6', 20);
     hitBoss(dmg, true, true);
@@ -371,7 +385,7 @@ export function handlePlayerBossInteraction(boss, env, triggerType) {
       boss.relVx = 290;
       player.invulnTimer = Math.max(player.invulnTimer, 0.85);
       playSfx('parry');
-      const dmg = Math.round(boss.maxHp * 0.23);
+      const dmg = 26;
       spawnShockwave(boss.worldX, getGroundY(boss.worldX) - 52 + boss.yOff, 250, '#f472b6');
       addPopup(`⚡-${dmg}!`, boss.worldX, getGroundY(boss.worldX) - 110, '#fde047', 20);
       hitBoss(dmg, true, true);
@@ -522,7 +536,24 @@ export function updateBossEngine(boss, env, dt) {
         boss.mechTimer = 1.25;
       }
     } else if (boss.kind === 'demon_hakimi') {
-      if (pickIdx === 1) {
+      const hkMode = boss.skillIdx % 3;
+      if (hkMode === 0) {
+        boss.mech = 'maodie_barrage';
+        boss.mechTimer = 4.6;
+        for (let m = 0; m < 5; m++) {
+          boss.objs.push({
+            type: 'boss_maodie',
+            x: boss.worldX - 24 + m * 52,
+            y: getGroundY(boss.worldX) - 62 - (m % 2) * 34,
+            vx: player.vx - (115 + m * 16),
+            vy: -310 - (m % 3) * 75,
+            rot: 0,
+            reflected: false,
+            done: false
+          });
+        }
+        addPopup('🐱 吃我一窝圆头耄耋!!', boss.worldX - 45, getGroundY(boss.worldX) - 120, '#fb923c', 18);
+      } else if (hkMode === 1) {
         boss.mech = 'cat_pounce';
         boss.mechSub = 0; // 0.95s unmistakable cat-butt crouch + red arc preview!
         boss.mechTimer = 1.25;
@@ -604,14 +635,14 @@ export function updateBossEngine(boss, env, dt) {
             boss.relVx = 210;
             playSfx('crate');
             playCriticalMomentVoice('boss_clash_parry', 'manbo_queen');
-            const dmg = Math.round(boss.maxHp * 0.24);
+            const dmg = 26;
             spawnShockwave(boss.worldX, bossCenterY, 250, '#fde047');
             addPopup(`⚡-${dmg}!`, boss.worldX, bossCenterY - 58, '#fde047', 21);
             hitBoss(dmg, false, true);
           } else if (Math.abs((player.y - 40) - bossCenterY) < 42 && boss.cursedFaceTimer <= 0 && player.giantTimer <= 0 && player.rocketDashTimer <= 0) {
             boss.relVx = 195;
             boss.vy = -420;
-            takeDamage(14);
+            takeDamage(9);
           }
         }
         if (boss.mechTimer <= 0) { boss.mech = 'idle'; boss.mechTimer = 1.4; }
@@ -638,7 +669,7 @@ export function updateBossEngine(boss, env, dt) {
           const wy = getGroundY(o.x);
           if (Math.abs(player.x - o.x) < 30 && player.y > wy - 44) {
             o.done = true;
-            if (player.giantTimer <= 0 && player.rocketDashTimer <= 0) takeDamage(13);
+            if (player.giantTimer <= 0 && player.rocketDashTimer <= 0) takeDamage(10);
           }
         } else if (o.type === 'gold_mic') {
           o.vy += 420 * dt;
@@ -686,7 +717,7 @@ export function updateBossEngine(boss, env, dt) {
             boss.stunTimer = 1.5;
             boss.relVx = 160; // Continues sliding smoothly forward, NO teleport!
             playSfx('crater');
-            const dmg = Math.round(boss.maxHp * 0.14);
+            const dmg = 18;
             addPopup(`⚡-${dmg}!`, boss.worldX, gy - 92, '#4ade80', 18);
             hitBoss(dmg, true, true);
             return;
@@ -694,7 +725,7 @@ export function updateBossEngine(boss, env, dt) {
             boss.mech = 'idle';
             boss.mechTimer = 1.6;
             boss.relVx = -240; // Bounces smoothly back behind bike!
-            takeDamage(14);
+            takeDamage(9);
             return;
           }
         }
@@ -724,7 +755,7 @@ export function updateBossEngine(boss, env, dt) {
           boss.relVx = -320; // Smoothly blasted backward by TNT!
           boss.vy = -260;
           playSfx('crater');
-          const dmg = Math.round(boss.maxHp * 0.27);
+          const dmg = 28;
           spawnShockwave(wall.x, getGroundY(wall.x) - 40, 320, '#ef4444');
           spawnBeans(wall.x, getGroundY(wall.x) - 45, 8, 2);
           addPopup(`⚡-${dmg}!`, wall.x, getGroundY(wall.x) - 115, '#fde047', 21);
@@ -737,7 +768,7 @@ export function updateBossEngine(boss, env, dt) {
       }
       if (wall && !wall.done && Math.abs(player.x - wall.x) < 34 && player.y > getGroundY(wall.x) - 68) {
         wall.done = true;
-        if (player.giantTimer <= 0 && player.rocketDashTimer <= 0) takeDamage(14);
+        if (player.giantTimer <= 0 && player.rocketDashTimer <= 0) takeDamage(9);
       }
       if (boss.mechTimer <= 0) {
         boss.playerHasBone = false;
@@ -770,7 +801,7 @@ export function updateBossEngine(boss, env, dt) {
           if (player.giantTimer > 0 || player.rocketDashTimer > 0) {
             playSfx('crater');
           } else {
-            takeDamage(14);
+            takeDamage(9);
           }
         }
       }
@@ -807,7 +838,7 @@ export function updateBossEngine(boss, env, dt) {
             boss.vy = 180;
             boss.relVx = 210;
             playSfx('crate');
-            const dmg = Math.round(boss.maxHp * 0.24);
+            const dmg = 26;
             spawnShockwave(boss.worldX, by, 240, '#4ade80');
             addPopup(`⚡-${dmg}!`, boss.worldX, by - 50, '#fde047', 20);
             hitBoss(dmg, true, true);
@@ -816,7 +847,7 @@ export function updateBossEngine(boss, env, dt) {
             boss.relVx = 220;
             boss.mech = 'idle';
             boss.mechTimer = 1.5;
-            takeDamage(14);
+            takeDamage(9);
             return;
           }
         }
@@ -866,7 +897,7 @@ export function updateBossEngine(boss, env, dt) {
           boss.drownTick = 0.85;
           player.vy = -550;
           player.onGround = false;
-          takeDamage(11);
+          takeDamage(9);
         }
       }
       if (boss.mechTimer <= 0) { boss.mech = 'idle'; boss.mechTimer = 1.45; }
@@ -888,7 +919,7 @@ export function updateBossEngine(boss, env, dt) {
         if (tipX <= player.x + 28 && tipX >= player.x - 45 && !boss.tongueHitDone) {
           if (player.y > gy - 38 && player.giantTimer <= 0 && player.rocketDashTimer <= 0) {
             boss.tongueHitDone = true;
-            takeDamage(14);
+            takeDamage(9);
           }
         }
         if (boss.mechTimer <= 0) {
@@ -932,7 +963,7 @@ export function updateBossEngine(boss, env, dt) {
           } else {
             // Physical ball hit player's chest!
             b.done = true;
-            takeDamage(13);
+            takeDamage(10);
             boss.mech = 'idle';
             boss.mechTimer = 1.4;
           }
@@ -973,7 +1004,7 @@ export function updateBossEngine(boss, env, dt) {
             boss.stunTimer = 1.4;
             boss.relVx = 220;
             playSfx('crate');
-            const dmg = Math.round(boss.maxHp * 0.18);
+            const dmg = 20;
             addPopup(`⚡-${dmg}!`, boss.worldX, gy - 98, '#4ade80', 19);
             hitBoss(dmg, true, true);
             return;
@@ -981,7 +1012,7 @@ export function updateBossEngine(boss, env, dt) {
             boss.relVx = 230;
             boss.mech = 'idle';
             boss.mechTimer = 1.5;
-            takeDamage(15);
+            takeDamage(12);
             return;
           }
         }
@@ -1027,7 +1058,7 @@ export function updateBossEngine(boss, env, dt) {
             boss.relVx = 240;
             boss.vy = 160;
             playSfx('crate');
-            const dmg = Math.round(boss.maxHp * 0.22);
+            const dmg = 24;
             spawnShockwave(boss.worldX, by, 240, '#f472b6');
             addPopup(`⚡-${dmg}!`, boss.worldX, by - 50, '#fde047', 20);
             hitBoss(dmg, true, true);
@@ -1037,7 +1068,7 @@ export function updateBossEngine(boss, env, dt) {
             boss.vy = -260;
             boss.mech = 'idle';
             boss.mechTimer = 1.5;
-            takeDamage(14);
+            takeDamage(9);
             return;
           }
         }
@@ -1071,7 +1102,7 @@ export function updateBossEngine(boss, env, dt) {
               yb.vy = -180;
             } else {
               yb.done = true;
-              takeDamage(14);
+              takeDamage(9);
             }
           } else if (yb.x < player.x - 130) {
             yb.done = true;
@@ -1086,7 +1117,7 @@ export function updateBossEngine(boss, env, dt) {
             boss.stunTimer = 1.9;
             boss.recoilX = 125;
             playSfx('crate');
-            const dmg = Math.round(boss.maxHp * 0.26);
+            const dmg = 28;
             spawnShockwave(boss.worldX, by, 290, '#f472b6');
             spawnBeans(boss.worldX - 20, by, 8, 2);
             addPopup(`⚡-${dmg}!`, boss.worldX - 20, by - 55, '#fde047', 21);
@@ -1095,9 +1126,53 @@ export function updateBossEngine(boss, env, dt) {
           }
         }
       }
-      if (!yb || yb.done || boss.mechTimer <= 0) {
+        if (!yb || yb.done || boss.mechTimer <= 0) {
         boss.mech = 'idle';
         boss.mechTimer = 1.4;
+      }
+    } else if (boss.mech === 'maodie_barrage') {
+      boss.mechTimer -= dt;
+      approachWorldX(boss, player.vx, rightHomeX + 10, 5.5, dt);
+      approachYOff(boss, -Math.abs(Math.sin(performance.now() * 0.02)) * 14, 8, dt);
+      let liveCnt = 0;
+      for (let i = 0; i < boss.objs.length; i++) {
+        const md = boss.objs[i];
+        if (md.done || md.type !== 'boss_maodie') continue;
+        liveCnt++;
+        md.vy += 880 * dt;
+        md.x += md.vx * dt;
+        md.y += md.vy * dt;
+        md.rot += (md.reflected ? 14 : -9) * dt;
+        const fy = getGroundY(md.x) - 22;
+        if (md.y >= fy) {
+          md.y = fy;
+          md.vy = -395 - (i % 2) * 55;
+        }
+        if (!md.reflected) {
+          if (Math.hypot(md.x - player.x, md.y - (player.y - 38)) < 36) {
+            if (player.giantTimer > 0 || player.rocketDashTimer > 0) {
+              md.reflected = true;
+              md.vx = player.vx + 740;
+              md.vy = -220;
+            } else {
+              md.done = true;
+              takeDamage(8);
+            }
+          } else if (md.x < player.x - 140) {
+            md.done = true;
+          }
+        } else {
+          const by = getGroundY(boss.worldX) - 50 + boss.yOff;
+          if (Math.hypot(md.x - boss.worldX, md.y - by) < 70) {
+            md.done = true;
+            playSfx('parry');
+            hitBoss(10, false, true);
+          }
+        }
+      }
+      if (liveCnt === 0 || boss.mechTimer <= 0) {
+        boss.mech = 'idle';
+        boss.mechTimer = 1.35;
       }
     }
     return;
@@ -1116,7 +1191,7 @@ export function updateBossEngine(boss, env, dt) {
         boss.mechTimer = 1.8;
         boss.stunTimer = 1.5;
         boss.recoilX = 110;
-        const dmg = Math.round(boss.maxHp * 0.22);
+        const dmg = 24;
         playSfx('crate');
         addPopup(`⚡-${dmg}!`, boss.worldX - 35, getGroundY(boss.worldX) - 135, '#fde047', 19);
         hitBoss(dmg, true, true);
@@ -1165,7 +1240,7 @@ export function updateBossEngine(boss, env, dt) {
                 mt.vy = -140;
               } else {
                 mt.done = true;
-                takeDamage(17);
+                takeDamage(10);
               }
             } else if (mt.x < player.x - 140) {
               mt.done = true;
@@ -1180,7 +1255,7 @@ export function updateBossEngine(boss, env, dt) {
               boss.recoilX = 140;
               playSfx('crate');
               grantShield(16, 5.5, false);
-              const dmg = Math.round(boss.maxHp * 0.28);
+              const dmg = 32;
               spawnShockwave(boss.worldX, by, 330, '#fde047');
               spawnBeans(boss.worldX - 25, by, 8, 2);
               addPopup(`⚡-${dmg}!`, boss.worldX - 30, by - 65, '#fde047', 21);
@@ -1466,6 +1541,11 @@ export function renderBossArenaAndModel(ctx, boss, env) {
         drawParryRing(yb.x, yb.y, Math.abs(yb.x - (player.x + 35)));
         drawActionIconBadge(ctx, yb.x, yb.y - 48, '🐔', '#fde047', now);
       }
+    }
+    for (let i = 0; i < boss.objs.length; i++) {
+      const md = boss.objs[i];
+      if (!md || md.done || md.type !== 'boss_maodie') continue;
+      drawModelOn(ctx, 'mini_maodie', md.x, md.y, md.rot || 0, 0.92);
     }
     ctx.restore();
   }

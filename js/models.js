@@ -1019,6 +1019,138 @@ export function buildAllSculptedAssets() {
           g.closePath();
           g.stroke();
         });
+
+        // Iconic Mini Round-Head Maodie ("小圆头耄耋" — airplane-pinned invisible ears, smooth round orange-white head & angry hiss!)
+        MODELS.mini_maodie = makeSprite(58, 58, (g) => {
+          g.translate(29, 30);
+          // Chubby round body
+          g.fillStyle = '#fb923c';
+          g.strokeStyle = '#0f172a';
+          g.lineWidth = 2.6;
+          g.beginPath();
+          g.ellipse(0, 12, 15, 11, 0, 0, Math.PI * 2);
+          g.fill();
+          g.stroke();
+
+          // Tiny airplane ears pressed completely flat against skull
+          g.fillStyle = '#ea580c';
+          g.beginPath();
+          g.ellipse(-16, -6, 5, 2.5, -0.35, 0, Math.PI * 2);
+          g.ellipse(16, -6, 5, 2.5, 0.35, 0, Math.PI * 2);
+          g.fill();
+          g.stroke();
+
+          // Perfectly smooth spherical Round Head (圆头!)
+          const hg = g.createRadialGradient(-4, -10, 3, 0, -5, 20);
+          hg.addColorStop(0, '#fdba74');
+          hg.addColorStop(0.65, '#f97316');
+          hg.addColorStop(1, '#c2410c');
+          g.fillStyle = hg;
+          g.beginPath();
+          g.arc(0, -5, 18.5, 0, Math.PI * 2);
+          g.fill();
+          g.stroke();
+
+          // White lower cheeks & chin
+          g.fillStyle = '#fffbeb';
+          g.beginPath();
+          g.ellipse(0, 2, 14, 9.5, 0, 0, Math.PI);
+          g.fill();
+
+          // Forehead orange tabby M-stripes
+          g.strokeStyle = '#9a3412';
+          g.lineWidth = 2.2;
+          g.beginPath();
+          g.moveTo(0, -21); g.lineTo(0, -13);
+          g.moveTo(-6, -19); g.lineTo(-4, -13);
+          g.moveTo(6, -19); g.lineTo(4, -13);
+          g.stroke();
+
+          // Fierce slanted golden eyes
+          g.fillStyle = '#fef08a';
+          g.strokeStyle = '#0f172a';
+          g.lineWidth = 1.8;
+          g.beginPath();
+          g.ellipse(-7, -6, 4.5, 3.2, 0.28, 0, Math.PI * 2);
+          g.ellipse(7, -6, 4.5, 3.2, -0.28, 0, Math.PI * 2);
+          g.fill();
+          g.stroke();
+          g.fillStyle = '#0f172a';
+          g.beginPath();
+          g.ellipse(-6.8, -6, 1.3, 2.6, 0, 0, Math.PI * 2);
+          g.ellipse(6.8, -6, 1.3, 2.6, 0, 0, Math.PI * 2);
+          g.fill();
+
+          // Angry hissing open mouth ("哈气!") + tiny sharp white fangs
+          g.fillStyle = '#e11d48';
+          g.beginPath();
+          g.ellipse(0, 3.5, 6.8, 5.2, 0, 0, Math.PI * 2);
+          g.fill();
+          g.stroke();
+          g.fillStyle = '#ffffff';
+          g.beginPath();
+          g.moveTo(-4.2, -0.5); g.lineTo(-2.6, 2.8); g.lineTo(-1.2, -0.5);
+          g.moveTo(4.2, -0.5); g.lineTo(2.6, 2.8); g.lineTo(1.2, -0.5);
+          g.fill();
+        });
+
+        MODELS.prop_maodie = makeSprite(62, 62, (g) => {
+          g.translate(31, 33);
+          g.fillStyle = '#facc15';
+          g.strokeStyle = '#0f172a';
+          g.lineWidth = 2.6;
+          g.beginPath();
+          g.roundRect(-18, 0, 36, 20, 6);
+          g.fill();
+          g.stroke();
+          drawModelOn(g, 'mini_maodie', 0, -6, 0, 0.78);
+        });
+
+        MODELS.prop_lightning = makeSprite(60, 60, (g) => {
+          g.translate(30, 30);
+          g.fillStyle = '#38bdf8';
+          g.strokeStyle = '#0f172a';
+          g.lineWidth = 2.6;
+          g.beginPath();
+          g.arc(0, 0, 21, 0, Math.PI * 2);
+          g.fill();
+          g.stroke();
+          g.fillStyle = '#fde047';
+          g.beginPath();
+          g.moveTo(4, -18);
+          g.lineTo(-10, 2);
+          g.lineTo(-1, 2);
+          g.lineTo(-5, 18);
+          g.lineTo(11, -3);
+          g.lineTo(2, -3);
+          g.closePath();
+          g.fill();
+          g.stroke();
+        });
+
+        MODELS.prop_wings = makeSprite(64, 58, (g) => {
+          g.translate(32, 31);
+          g.strokeStyle = '#0f172a';
+          g.lineWidth = 2.5;
+          for (const dir of [-1, 1]) {
+            g.save();
+            g.scale(dir, 1);
+            g.fillStyle = '#bae6fd';
+            g.beginPath();
+            g.moveTo(2, 4);
+            g.quadraticCurveTo(18, -20, 26, -12);
+            g.quadraticCurveTo(22, 2, 14, 10);
+            g.closePath();
+            g.fill();
+            g.stroke();
+            g.restore();
+          }
+          g.fillStyle = '#fde047';
+          g.beginPath();
+          g.arc(0, 4, 7, 0, Math.PI * 2);
+          g.fill();
+          g.stroke();
+        });
       }
       buildAllSculptedAssets();
 

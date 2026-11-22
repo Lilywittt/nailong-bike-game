@@ -6,6 +6,7 @@
 import {
   HEROES,
   GARAGE_MODS,
+  BEAN_TALENTS,
   WORLD_PROP_POOL,
   HEAL_BOBA_PROP,
   TIMED_SHIELD_PROP,
@@ -18,8 +19,11 @@ import {
   getHeroLvFromSave,
   getHeroMaxHpFromSave,
   getHeroHpUpgradeCost,
-  getModPropDuration
-} from './config.js?v=5.6';
+  getModPropDuration,
+  getTalentLvFromSave,
+  getSuperChargeSpeedMultFromSave,
+  getAutoRegenPer5sFromSave
+} from './config.js?v=6.2';
 
 import {
   buildAllSculptedAssets,
@@ -27,7 +31,7 @@ import {
   drawSpaldingWheelOn,
   drawSculptedBikeAndHero,
   getEnemySpriteKey
-} from './models.js?v=5.6';
+} from './models.js?v=6.2';
 
 import {
   ensureAudio,
@@ -42,9 +46,9 @@ import {
   stopBossBgm,
   playSfx,
   tickProceduralBgm
-} from './audio.js?v=5.6';
+} from './audio.js?v=6.2';
 
-import { createCloudStore } from './cloud.js?v=5.6';
+import { createCloudStore } from './cloud.js?v=6.2';
 import {
   initBossCustomState,
   clearBossTransientHazards,
@@ -53,7 +57,7 @@ import {
   handlePlayerBossInteraction,
   updateBossEngine,
   renderBossArenaAndModel
-} from './bosses.js?v=5.6';
+} from './bosses.js?v=6.2';
 
 // Zero-allocation in-place array compaction (eliminates 1,400+ GC array allocations/sec!)
 function compactInPlace(arr, keepFn) {
@@ -70,23 +74,31 @@ function pushCapped(arr, item, maxLen) {
   arr.push(item);
 }
 
-// Unbounded Concave Monotonic Distance Curve:
-// f(d) = 1 + (sqrt(2)+1)*(sqrt(1 + d/1000) - 1) -> f(0)=1.0x, f(1km)=2.0x, f'(d)>0, f''(d)<0, NO upper bound (+infinity)!
+// Continuous-Attrition & High-Density Survival Curve + Decoupled Bounded Gentle Speed Curve:
+//  - Forward speed: 92 * (1 - exp(-d/2800)) -> gentle concave curve, STRICT UPPER BOUND (+92 px/s max), decoupled from difficulty!
+//  - Difficulty pressure: escalates via enemy/saw density + continuous attrition, NEVER discrete one-shot spikes!
 const MIN_NORMAL_DIST_FOR_BONUS = 520;
 function getSurvivalGradient(singleDist) {
   const d = Math.max(0, singleDist);
   const km = d / 1000;
   const fullKm = Math.floor(km);
-  const rawMult = 1 + (Math.SQRT2 + 1) * (Math.sqrt(1 + km) - 1);
-  const dmgMult = Math.round(rawMult * 100) / 100;
-  const multStr = dmgMult.toFixed(2).replace(/0$/, '');
+  const densityScore = 1 + (Math.SQRT2 + 1) * (Math.sqrt(1 + km) - 1);
+  const dispMult = Math.round(densityScore * 100) / 100;
+  const multStr = dispMult.toFixed(2).replace(/0$/, '');
+
+  // Gentle per-hit scaling so discrete hits NEVER one-shot; survival pressure comes from density + continuous drain
+  const dmgMult = +(1 + 0.36 * Math.log1p(km)).toFixed(2);
+  // Decoupled, smooth, strictly bounded forward speed (+0 at 0m, +28 at 1km, +47 at 2km, upper bound = +92 px/s)
+  const boundedSpeedAdd = Math.round(92 * (1 - Math.exp(-d / 2800)));
+  // Smooth continuous environmental attrition past 550m
+  const envDrain = d > 550 ? Math.min(2.6, 0.32 + Math.sqrt((d - 550) / 1000) * 0.82) : 0;
 
   const tier = Math.min(6, fullKm + 1);
   let icon = '🟢', border = '#22c55e', color = '#4ade80';
-  if (dmgMult >= 5.0) { icon = '💀'; border = '#e11d48'; color = '#fda4af'; }
-  else if (dmgMult >= 3.8) { icon = '🟣'; border = '#a855f7'; color = '#e9d5ff'; }
-  else if (dmgMult >= 2.8) { icon = '🔴'; border = '#ef4444'; color = '#f87171'; }
-  else if (dmgMult >= 2.0) { icon = '🟡'; border = '#eab308'; color = '#fde047'; }
+  if (dispMult >= 5.0) { icon = '💀'; border = '#e11d48'; color = '#fda4af'; }
+  else if (dispMult >= 3.8) { icon = '🟣'; border = '#a855f7'; color = '#e9d5ff'; }
+  else if (dispMult >= 2.8) { icon = '🔴'; border = '#ef4444'; color = '#f87171'; }
+  else if (dispMult >= 2.0) { icon = '🟡'; border = '#eab308'; color = '#fde047'; }
 
   return {
     tier,
@@ -94,13 +106,15 @@ function getSurvivalGradient(singleDist) {
     label: `${icon} ${multStr}x`,
     border,
     color,
+    dispMult,
     dmgMult,
-    // Comfortable human speed & generous >=385px spacing so ZERO checkmates ever occur!
-    speedAdd: Math.min(290, (dmgMult - 1) * 65),
-    chunkGap: Math.round(Math.max(385, 465 - (dmgMult - 1) * 20)),
-    ambushProb: Math.min(0.58, 0.18 + (dmgMult - 1) * 0.10),
-    doubleProb: 0,
-    bossGap: Math.round(Math.max(185, 230 - (dmgMult - 1) * 10))
+    envDrain,
+    speedAdd: boundedSpeedAdd,
+    chunkGap: Math.round(Math.max(305, 445 - 64 * Math.log1p(km))),
+    ambushProb: Math.min(0.76, 0.22 + 0.22 * Math.log1p(km)),
+    doubleProb: km >= 0.6 ? Math.min(0.46, (km - 0.6) * 0.16) : 0,
+    extraMobs: Math.min(3, Math.floor(km * 0.85)),
+    bossGap: Math.round(Math.max(155, 225 - 24 * Math.log1p(km)))
   };
 }
 
@@ -178,6 +192,15 @@ const hyperStockTxt = document.getElementById('hyperStockTxt');
 const hyperBuyBtn = document.getElementById('hyperBuyBtn');
 const preBoost400 = document.getElementById('preBoost400');
 const preBoost800 = document.getElementById('preBoost800');
+const preDeathBoost400 = document.getElementById('preDeathBoost400');
+const preDeathBoost800 = document.getElementById('preDeathBoost800');
+const talentHubBar = document.getElementById('talentHubBar');
+const talentHubSummary = document.getElementById('talentHubSummary');
+const talentOpenBtn = document.getElementById('talentOpenBtn');
+const talentOverlay = document.getElementById('talentOverlay');
+const talentWalletTxt = document.getElementById('talentWalletTxt');
+const talentCloseBtn = document.getElementById('talentCloseBtn');
+const talentListBox = document.getElementById('talentListBox');
 const launchBtn = document.getElementById('launchBtn');
 
 const pauseBtn = document.getElementById('pauseBtn');
@@ -247,27 +270,17 @@ const rankListBox = document.getElementById('rankListBox');
 // ==================== ATOMIC CLOUD & LOCAL SAVE STORE ====================
 let state = 'HUB'; // 'HUB' | 'PLAYING' | 'PAUSED' | 'DYING' | 'GAMEOVER'
 let preSelectedBoost = 0;
+let preSelectedDeathBoost = 0;
+let deathDashActive = false;
 let bankedRunBeans = 0;
 
-function checkIkunTestAccountGift(storeRef) {
-  try {
-    if (storeRef && storeRef.auth && storeRef.auth.username && storeRef.auth.username.toLowerCase() === 'ikun') {
-      if (!localStorage.getItem('pelican_ikun_100m_gift_v1') || storeRef.save.beans < 50000000) {
-        localStorage.setItem('pelican_ikun_100m_gift_v1', '1');
-        storeRef.save.beans = Math.max(storeRef.save.beans, 100000000);
-        storeRef.markMutatedAndSave(true);
-      }
-    }
-  } catch (_) {}
-}
-
 const store = createCloudStore(() => {
-  checkIkunTestAccountGift(store);
   refreshAccountButtonsUI();
   if (state === 'HUB') refreshHubUI();
+  if (talentOverlay && !talentOverlay.classList.contains('hidden')) refreshTalentModalUI();
 });
-checkIkunTestAccountGift(store);
-setTimeout(() => { checkIkunTestAccountGift(store); if (state === 'HUB') refreshHubUI(); }, 900);
+store.pullSessionOnBoot();
+setTimeout(() => { if (state === 'HUB') refreshHubUI(); }, 900);
 
 function getHeroById(id) {
   return HEROES.find((h) => h.id === id) || HEROES[0];
@@ -480,10 +493,19 @@ function refreshHubUI() {
     heroHpUpBtn.classList.add('maxed');
     heroHpUpBtn.style.opacity = '1';
   } else {
-    const nextMaxHp = curMaxHp + (curH.hpStep || 22);
+    const hpPctMult = 1 + getTalentLvFromSave(s, 'maxHpPct') * 0.05;
+    const nextMaxHp = Math.round(((curH.baseHp || 100) + curLv * (curH.hpStep || 22)) * hpPctMult);
     heroHpUpBtn.textContent = `⬆️ 升至${nextMaxHp}HP (${hpCost}🌿)`;
     heroHpUpBtn.classList.remove('maxed');
     heroHpUpBtn.style.opacity = s.beans >= hpCost ? '1' : '0.5';
+  }
+
+  // 2b. Permanent Green-Bean Talent Summary Bar
+  if (talentHubSummary) {
+    const scLv = getTalentLvFromSave(s, 'superCharge');
+    const hpLv = getTalentLvFromSave(s, 'maxHpPct');
+    const rgLv = getTalentLvFromSave(s, 'autoRegen');
+    talentHubSummary.textContent = `🌈充能+${scLv * 5}% · ❤️血限+${hpLv * 5}% · 💚回血${rgLv}点/5s`;
   }
 
   // 3. Checkpoint Selector
@@ -541,6 +563,8 @@ function refreshHubUI() {
 
   preBoost400.classList.toggle('active', preSelectedBoost === 400);
   preBoost800.classList.toggle('active', preSelectedBoost === 800);
+  if (preDeathBoost400) preDeathBoost400.classList.toggle('active', preSelectedDeathBoost === 400);
+  if (preDeathBoost800) preDeathBoost800.classList.toggle('active', preSelectedDeathBoost === 800);
 
   // 5. Chargeable Hold-to-Ram Hyper Dash Shop Card (10000🌿 per 10s charge, max 3 charges = 30.0s!)
   const curDashE = Math.min(30, Math.max(0, Number(s.dashEnergy) || 0));
@@ -561,6 +585,88 @@ function refreshHubUI() {
   launchBtn.textContent = s.selectedCheckpoint > 0
     ? `🐔 从 ${s.selectedCheckpoint}m 出发！`
     : '🐔 开始游戏！';
+}
+
+function refreshTalentModalUI() {
+  if (!talentListBox) return;
+  const s = store.save;
+  if (talentWalletTxt) talentWalletTxt.textContent = s.beans;
+  talentListBox.innerHTML = '';
+
+  for (const t of BEAN_TALENTS) {
+    const lv = getTalentLvFromSave(s, t.key);
+    const isMax = lv >= t.maxLv;
+    const cost = t.costPerLv;
+    const card = document.createElement('div');
+    card.className = 'talent-card';
+
+    let pipsHtml = '';
+    for (let i = 0; i < t.maxLv; i++) {
+      pipsHtml += `<span class="talent-pip ${i < lv ? 'on' : ''}"></span>`;
+    }
+
+    const effectTxt = isMax
+      ? `✨ 已满级：${t.formatDesc(lv)}`
+      : `当前 ${t.formatCur(lv)} → 下一级 ${t.formatNext(lv)}`;
+
+    card.innerHTML = `
+      <div class="tc-head">
+        <span class="tc-name">${t.ico} ${t.name}</span>
+        <span class="tc-lv-badge">Lv ${lv} / ${t.maxLv}</span>
+      </div>
+      <div class="talent-pips">${pipsHtml}</div>
+      <div class="tc-foot">
+        <span class="tc-desc">${effectTxt}</span>
+        <button class="talent-up-btn ${isMax ? 'maxed' : ''}" style="${!isMax && s.beans < cost ? 'opacity:0.5;' : ''}">
+          ${isMax ? '✨ 满级' : `⬆️ 升级 (${cost}🌿)`}
+        </button>
+      </div>
+    `;
+
+    const btn = card.querySelector('.talent-up-btn');
+    btn.addEventListener('click', () => {
+      ensureAudio();
+      if (isMax) return;
+      if (s.beans < cost) {
+        showToast(`🌿 绿豆不足 (需 ${cost}🌿)！`);
+        return;
+      }
+      s.beans -= cost;
+      if (!s.talents) s.talents = {};
+      s.talents[t.key] = lv + 1;
+      store.markMutatedAndSave(true);
+      playSfx('crate');
+      showToast(`${t.ico} ${t.name}升至 Lv${lv + 1} (${t.formatCur(lv + 1)})！`);
+      refreshTalentModalUI();
+      refreshHubUI();
+    });
+    talentListBox.appendChild(card);
+  }
+}
+
+function openTalentModal() {
+  ensureAudio();
+  playSfx('bean');
+  refreshTalentModalUI();
+  if (talentOverlay) talentOverlay.classList.remove('hidden');
+}
+
+function closeTalentModal() {
+  if (talentOverlay) talentOverlay.classList.add('hidden');
+}
+
+if (talentHubBar) talentHubBar.addEventListener('click', openTalentModal);
+if (talentOpenBtn) {
+  talentOpenBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openTalentModal();
+  });
+}
+if (talentCloseBtn) talentCloseBtn.addEventListener('click', closeTalentModal);
+if (talentOverlay) {
+  talentOverlay.addEventListener('click', (e) => {
+    if (e.target === talentOverlay) closeTalentModal();
+  });
 }
 
 if (hyperBuyBtn) {
@@ -595,6 +701,20 @@ preBoost800.addEventListener('click', () => {
   preSelectedBoost = preSelectedBoost === 800 ? 0 : 800;
   refreshHubUI();
 });
+if (preDeathBoost400) {
+  preDeathBoost400.addEventListener('click', () => {
+    ensureAudio(); playSfx('bean');
+    preSelectedDeathBoost = preSelectedDeathBoost === 400 ? 0 : 400;
+    refreshHubUI();
+  });
+}
+if (preDeathBoost800) {
+  preDeathBoost800.addEventListener('click', () => {
+    ensureAudio(); playSfx('bean');
+    preSelectedDeathBoost = preSelectedDeathBoost === 800 ? 0 : 800;
+    refreshHubUI();
+  });
+}
 
 heroHpUpBtn.addEventListener('click', () => {
   ensureAudio();
@@ -602,7 +722,7 @@ heroHpUpBtn.addEventListener('click', () => {
   const hid = s.selectedHero || 'nailong';
   const lv = getHeroLvFromSave(s, hid);
   if (lv >= 6) {
-    showToast('✨ 当前角色血量已达满级(210 HP)!');
+    showToast(`✨ 当前角色等级已满 (${getHeroMaxHpFromSave(s, hid)} HP)!`);
     return;
   }
   const cost = getHeroHpUpgradeCost(lv);
@@ -767,7 +887,7 @@ function addPopup(text, x, y, color = '#fde047', size = 18) {
 
 function spawnBeanFountain(wx, wy, count = 6, valEach = 1) {
   for (let i = 0; i < count; i++) {
-    if (beans.length >= 95) beans.shift();
+    if (beans.length >= 280) beans.shift();
     const a = -Math.PI * (0.18 + (i / Math.max(1, count - 1)) * 0.64);
     const sp = 180 + Math.random() * 220;
     beans.push({
@@ -813,12 +933,15 @@ function bankRunProgress(pushToCloud = false) {
   }
 }
 
-// ==================== SUPER BONUS, HEALING & RARE PROPS ====================
+// ==================== DIVERSE RANDOMIZED SUPER BONUS, HEALING & RICH PROPS ====================
 const BONUS_LETTER_WORDS = [
   ['I', 'K', 'U', 'N'],
   ['M', 'A', 'N', 'B', 'O'],
   ['6', '6', '6'],
-  ['N', 'B', '!']
+  ['N', 'B', '!'],
+  ['C', 'A', 'T'],
+  ['W', 'I', 'N'],
+  ['G', 'O', '!']
 ];
 const GLYPH_5X5 = {
   I: ['#####', '..#..', '..#..', '..#..', '#####'],
@@ -829,16 +952,34 @@ const GLYPH_5X5 = {
   A: ['.###.', '#...#', '#####', '#...#', '#...#'],
   B: ['####.', '#...#', '####.', '#...#', '####.'],
   O: ['.###.', '#...#', '#...#', '#...#', '.###.'],
+  C: ['.####', '#....', '#....', '#....', '.####'],
+  T: ['#####', '..#..', '..#..', '..#..', '..#..'],
+  W: ['#...#', '#...#', '#.#.#', '##.##', '#...#'],
+  G: ['.####', '#....', '#..##', '#...#', '.###.'],
   '6': ['.###.', '#....', '####.', '#...#', '.###.'],
   '!': ['..#..', '..#..', '..#..', '.....', '..#..']
 };
 
+let bonusPatternBag = [];
+function nextBonusPatternId() {
+  if (!bonusPatternBag.length) {
+    bonusPatternBag = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    for (let i = bonusPatternBag.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [bonusPatternBag[i], bonusPatternBag[j]] = [bonusPatternBag[j], bonusPatternBag[i]];
+    }
+  }
+  return bonusPatternBag.pop();
+}
+
 function spawnNextBonusFormation() {
   const sx = nextBonusShapeX;
-  const kind = bonusShapeIdx++ % 5;
-  const baseY = -255;
-  if (kind === 0 || kind === 2) {
-    const word = BONUS_LETTER_WORDS[(bonusShapeIdx >> 1) % BONUS_LETTER_WORDS.length];
+  const pat = nextBonusPatternId();
+  bonusShapeIdx++;
+  const baseY = -245 + Math.round((Math.random() - 0.5) * 34);
+
+  if (pat === 0 || pat === 5) {
+    const word = BONUS_LETTER_WORDS[Math.floor(Math.random() * BONUS_LETTER_WORDS.length)];
     let curX = sx;
     for (let w = 0; w < word.length; w++) {
       const rows = GLYPH_5X5[word[w]] || GLYPH_5X5.O;
@@ -849,49 +990,93 @@ function spawnNextBonusFormation() {
           }
         }
       }
-      curX += 152;
+      curX += 148;
     }
-    nextBonusShapeX = curX + 90;
-  } else if (kind === 1) {
+    nextBonusShapeX = curX + 85;
+  } else if (pat === 1) {
+    // Double DNA Helix
     for (let i = 0; i < 18; i++) {
       const x = sx + i * 30;
       const s = Math.sin(i * 0.55) * 62;
       beans.push({ x, y: baseY - 72 + s, val: 2, giant: i % 4 === 0, taken: false });
       beans.push({ x, y: baseY - 72 - s, val: 2, giant: i % 4 === 2, taken: false });
     }
-    nextBonusShapeX = sx + 600;
-  } else if (kind === 3) {
+    nextBonusShapeX = sx + 585;
+  } else if (pat === 2) {
+    // Heart + Diamond
     for (let i = 0; i < 16; i++) {
       const t = (i / 16) * Math.PI * 2;
       const hx = 16 * Math.pow(Math.sin(t), 3);
       const hy = -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t));
-      beans.push({ x: sx + 130 + hx * 6.2, y: baseY - 82 + hy * 5.2, val: 3, giant: i % 4 === 0, taken: false });
+      beans.push({ x: sx + 130 + hx * 6.0, y: baseY - 82 + hy * 5.0, val: 3, giant: i % 4 === 0, taken: false });
     }
-    for (let i = -3; i <= 3; i++) {
-      for (let j = -3; j <= 3; j++) {
-        if (Math.abs(i) + Math.abs(j) === 3 || (i === 0 && j === 0)) {
-          beans.push({ x: sx + 370 + i * 26, y: baseY - 80 + j * 24, val: 2, giant: i === 0 && j === 0, taken: false });
-        }
+    nextBonusShapeX = sx + 320;
+  } else if (pat === 3) {
+    // Giant Cat Paw Print (🐾)
+    for (let a = 0; a < 12; a++) {
+      const ang = (a / 12) * Math.PI * 2;
+      beans.push({ x: sx + 160 + Math.cos(ang) * 42, y: baseY - 56 + Math.sin(ang) * 32, val: 2, giant: a % 3 === 0, taken: false });
+    }
+    const toes = [[-52, -108], [-18, -126], [18, -126], [52, -108]];
+    for (const [tx, ty] of toes) {
+      beans.push({ x: sx + 160 + tx, y: baseY + ty, val: 3, giant: true, taken: false });
+      beans.push({ x: sx + 160 + tx, y: baseY + ty + 20, val: 2, giant: false, taken: false });
+    }
+    nextBonusShapeX = sx + 340;
+  } else if (pat === 4) {
+    // Golden Crown (👑)
+    const crownPts = [
+      [0, 0], [0, -25], [0, -50], [0, -75],
+      [30, -45], [60, -25], [90, -55], [120, -90],
+      [150, -55], [180, -25], [210, -45],
+      [240, -75], [240, -50], [240, -25], [240, 0],
+      [48, 0], [96, 0], [144, 0], [192, 0]
+    ];
+    for (let i = 0; i < crownPts.length; i++) {
+      const [cx, cy] = crownPts[i];
+      beans.push({ x: sx + 40 + cx, y: baseY - 30 + cy, val: 2, giant: cy <= -70, taken: false });
+    }
+    nextBonusShapeX = sx + 360;
+  } else if (pat === 6) {
+    // Triple Soaring Rainbow Arcs
+    for (let arcIdx = 0; arcIdx < 2; arcIdx++) {
+      const ox = sx + arcIdx * 240;
+      for (let i = 0; i <= 10; i++) {
+        const u = i / 10;
+        const ay = Math.sin(u * Math.PI) * 95;
+        beans.push({ x: ox + i * 20, y: baseY - 24 - ay, val: 2, giant: i === 5, taken: false });
       }
     }
-    nextBonusShapeX = sx + 540;
+    nextBonusShapeX = sx + 500;
+  } else if (pat === 7) {
+    // Zig-Zag Lightning Bolt
+    for (let i = 0; i < 16; i++) {
+      const zig = (i % 8 < 4) ? (i % 4) * 24 : (4 - (i % 4)) * 24;
+      beans.push({ x: sx + i * 26, y: baseY - 35 - zig, val: 2, giant: i % 4 === 0, taken: false });
+      beans.push({ x: sx + i * 26, y: baseY - 65 - zig, val: 2, giant: false, taken: false });
+    }
+    nextBonusShapeX = sx + 470;
   } else {
+    // Triple Speed Chevrons (>>>)
     for (let a = 0; a < 3; a++) {
-      const ax = sx + a * 145;
+      const ax = sx + a * 140;
       for (let k = -3; k <= 3; k++) {
         beans.push({ x: ax + (3 - Math.abs(k)) * 26, y: baseY - 78 + k * 22, val: 2, giant: k === 0, taken: false });
       }
     }
-    nextBonusShapeX = sx + 510;
+    nextBonusShapeX = sx + 490;
   }
 }
 
-// Strict <= 5% Playtime Cap: 10s Super Bonus requires >= 210s (3m30s) of active normal play!
+// Strict <= 5% Base Playtime Cap + Talent #1 (+5%/Lv) + Pelican Hero Passive (+10%):
 function addSuperCharge(rawGain) {
   if (superBonusTimer > 0 || headStartTargetDist > 0) return;
-  const secCeiling = (normalPlaySecSinceBonus / MIN_NORMAL_SEC_FOR_BONUS) * 100;
-  superCharge = Math.min(100, secCeiling, superCharge + rawGain * 0.20);
-  if (superCharge >= 100 && normalPlaySecSinceBonus >= MIN_NORMAL_SEC_FOR_BONUS) {
+  const heroBonusMult = activeRunHeroId === 'pelican' ? 1.10 : 1.0;
+  const chargeMult = getSuperChargeSpeedMultFromSave(store.save) * heroBonusMult;
+  const effMinSec = MIN_NORMAL_SEC_FOR_BONUS / chargeMult;
+  const secCeiling = (normalPlaySecSinceBonus / effMinSec) * 100;
+  superCharge = Math.min(100, secCeiling, superCharge + rawGain * 0.20 * chargeMult);
+  if (superCharge >= 100 && normalPlaySecSinceBonus >= effMinSec) {
     triggerSuperBonusStage();
   }
 }
@@ -932,6 +1117,10 @@ function triggerSuperBonusStage() {
 
 // Smooth Continuous Healing: adds `instantPart` immediately + streams `regenPart` gradually over ~2.2s!
 function healPlayer(amount, instantRatio = 0.25, showPop = true) {
+  // Any active heal immediately purges pending continuous bleed/dotPool first!
+  if (player.dotPool && player.dotPool > 0) {
+    player.dotPool = Math.max(0, player.dotPool - amount * 0.6);
+  }
   const totalGain = Math.max(0.5, Number(amount) || 0);
   const missing = Math.max(0, player.maxHp - (player.hp + player.regenPool));
   if (missing <= 0.2) {
@@ -959,7 +1148,25 @@ function healPlayer(amount, instantRatio = 0.25, showPop = true) {
 }
 
 function pushPropCooldownAhead() {
-  nextPropDist = Math.max(nextPropDist, runStats.dist + 310 + Math.floor(Math.random() * 120));
+  nextPropDist = Math.max(nextPropDist, runStats.dist + 135 + Math.floor(Math.random() * 55));
+}
+
+function spawnAlliedMaodieSwarm(count = 6) {
+  const rear = Boolean(activeBoss && superBonusTimer <= 0 && activeBoss.worldX < player.x);
+  const dir = rear ? -1 : 1;
+  for (let i = 0; i < count; i++) {
+    projectiles.push({
+      kind: 'mini_maodie',
+      x: player.x + dir * (28 + i * 16),
+      y: player.y - 68 - (i % 3) * 18,
+      vx: player.vx + dir * (310 + i * 52),
+      vy: -380 - (i % 3) * 95,
+      bouncesLeft: 4,
+      r: 22,
+      rot: 0,
+      life: 4.6
+    });
+  }
 }
 
 function grantTempShield(amount, durSec, showPop = true) {
@@ -1025,6 +1232,22 @@ function activateWorldProp(def) {
     player.giantTimer = 3.6;
     player.invulnTimer = Math.max(player.invulnTimer, 3.9);
     showToast(def.toast);
+  } else if (def.id === 'midas_gold') {
+    player.midasTimer = 6.0;
+    showToast(def.toast);
+  } else if (def.id === 'maodie_pack') {
+    spawnAlliedMaodieSwarm(8);
+    showToast(def.toast);
+  } else if (def.id === 'thunder_drum') {
+    player.thunderAuraTimer = 5.4;
+    player.thunderAuraTick = 0.05;
+    showToast(def.toast);
+  } else if (def.id === 'sky_wings') {
+    player.skyWingsTimer = 6.5;
+    player.jumpsLeft = 5;
+    player.vy = Math.min(player.vy, -420);
+    player.onGround = false;
+    showToast(def.toast);
   }
   refreshBuffChips();
   syncControlsUI();
@@ -1034,7 +1257,11 @@ function activateWorldProp(def) {
 function refreshBuffChips() {
   const list = [];
   if (player.hyperDashActive) list.push(`☄️ 究极霸王超级冲刺 ${(10 - player.hyperSessionSec).toFixed(1)}s`);
-  if (headStartTargetDist > 0) list.push(`🚀 开局狂飙 → ${headStartTargetDist}m`);
+  if (headStartTargetDist > 0) {
+    list.push(deathDashActive ? `🔥 死亡终极冲刺 → ${headStartTargetDist}m` : `🚀 开局狂飙 → ${headStartTargetDist}m`);
+  } else if (runStats && runStats.deathDashMeters > 0 && !runStats.deathDashUsed) {
+    list.push(`🔥 死亡冲${runStats.deathDashMeters}m待命`);
+  }
   if (superBonusTimer > 0) list.push(`🌈 超级奖励 ${superBonusTimer.toFixed(0)}s`);
   if (player.tempShieldHp > 0 && player.tempShieldTimer > 0) {
     list.push(`🛡️ 限时盾 ${Math.ceil(player.tempShieldHp)} (${player.tempShieldTimer.toFixed(1)}s)`);
@@ -1046,6 +1273,9 @@ function refreshBuffChips() {
   if (player.mortarTimer > 0) list.push(`🐱 迫击猫 ${player.mortarTimer.toFixed(1)}s`);
   if (player.weaponId === 'gatling') list.push(`🏀 加特林 ${player.weaponTimer.toFixed(1)}s`);
   if (player.weaponId === 'bazooka') list.push(`🦈 火箭筒 ${player.weaponTimer.toFixed(1)}s`);
+  if (player.midasTimer > 0) list.push(`🪙 点豆成金 ${player.midasTimer.toFixed(1)}s`);
+  if (player.thunderAuraTimer > 0) list.push(`⚡ 雷电护体 ${player.thunderAuraTimer.toFixed(1)}s`);
+  if (player.skyWingsTimer > 0) list.push(`🪽 滑翔飞翼 ${player.skyWingsTimer.toFixed(1)}s`);
 
   const sig = list.join('|');
   if (uiCache.buffSig === sig) return;
@@ -1077,10 +1307,10 @@ function activateHeadStartBoost(boostMeters, cost) {
 }
 
 document.getElementById('inRunDash400').addEventListener('click', (e) => {
-  e.stopPropagation(); ensureAudio(); activateHeadStartBoost(400, 150);
+  e.stopPropagation(); ensureAudio(); activateHeadStartBoost(400, 1000);
 });
 document.getElementById('inRunDash800').addEventListener('click', (e) => {
-  e.stopPropagation(); ensureAudio(); activateHeadStartBoost(800, 280);
+  e.stopPropagation(); ensureAudio(); activateHeadStartBoost(800, 2000);
 });
 
 // ==================== START NEW RUN, PAUSE, SETTLEMENT & SHARE-TO-REVIVE ====================
@@ -1093,7 +1323,17 @@ function startNewRun(heroId, startDistMeters = 0, boostMeters = 0) {
   const initDist = startDistMeters;
   runStartDist = initDist;
   prevBestSingleRun = s.bestSingleRun || 0;
-  runStats = { dist: initDist, singleRunDist: 0, beans: 0, bossKills: 0, reviveUsed: false, healBuysUsed: 0 };
+  runStats = {
+    dist: initDist,
+    singleRunDist: 0,
+    beans: 0,
+    bossKills: 0,
+    reviveUsed: false,
+    healBuysUsed: 0,
+    deathDashMeters: 0,
+    deathDashUsed: false
+  };
+  deathDashActive = false;
   bankedRunBeans = 0;
   combo = 0; comboTimer = 0;
   superCharge = 0;
@@ -1112,12 +1352,11 @@ function startNewRun(heroId, startDistMeters = 0, boostMeters = 0) {
   lastThreatTier = 1;
   pendingShare = null;
   if (reviveStatusHint) reviveStatusHint.classList.add('hidden-block');
-  const qaBossParam = (location.hostname === '127.0.0.1' || location.hostname === 'localhost') ? new URLSearchParams(location.search).get('qaBoss') : null;
-  nextBossDist = initDist + (qaBossParam ? 42 : 145);
+  nextBossDist = initDist + 150;
   nextTruckDist = initDist + 145;
-  nextPropDist = initDist + 220 + Math.floor(Math.random() * 80);
-  nextShieldDist = initDist + 340;
-  nextHealDist = initDist + 480;
+  nextPropDist = initDist + 115 + Math.floor(Math.random() * 55);
+  nextShieldDist = initDist + 290;
+  nextHealDist = initDist + 360;
   nextFlagDist = (Math.floor(initDist / 500) + 1) * 500;
   bossHud.classList.add('hidden');
   bossHud.classList.remove('enraged');
@@ -1142,6 +1381,8 @@ function startNewRun(heroId, startDistMeters = 0, boostMeters = 0) {
   player.maxHp = getHeroMaxHpFromSave(s, h.id);
   player.hp = player.maxHp;
   player.regenPool = 0;
+  player.dotPool = 0;
+  player.autoRegenTimer = 5.0;
   player.displayHp = player.maxHp;
   player.trailHp = player.maxHp;
   hpTrailFill.style.width = '100%';
@@ -1156,6 +1397,7 @@ function startNewRun(heroId, startDistMeters = 0, boostMeters = 0) {
   player.weaponId = null; player.weaponTimer = 0;
   player.mountId = null; player.mountTimer = 0;
   player.orbitSawTimer = 0;
+  player.midasTimer = 0; player.thunderAuraTimer = 0; player.thunderAuraTick = 0; player.skyWingsTimer = 0;
   player.slashLines = [];
 
   pits = []; mudZones = []; iceZones = []; snowballs = []; lilyPads = []; catapults = []; backboards = [];
@@ -1192,13 +1434,25 @@ function startNewRun(heroId, startDistMeters = 0, boostMeters = 0) {
   state = 'PLAYING';
   playSfx('crate');
 
+  if (preSelectedDeathBoost > 0) {
+    const dCost = preSelectedDeathBoost >= 800 ? 2000 : 1000;
+    if (s.beans >= dCost) {
+      s.beans -= dCost;
+      runStats.deathDashMeters = preSelectedDeathBoost;
+      store.markMutatedAndSave(true);
+    } else {
+      showToast('🌿 绿豆不足以激活死亡冲刺');
+    }
+    preSelectedDeathBoost = 0;
+  }
+
   if (boostMeters > 0) {
-    const cost = boostMeters >= 800 ? 280 : 150;
+    const cost = boostMeters >= 800 ? 2000 : 1000;
     if (!activateHeadStartBoost(boostMeters, cost)) showToast(STAGES[stageIndex].name);
     preSelectedBoost = 0;
   } else {
     showToast(STAGES[stageIndex].name);
-    if (s.beans >= 150) {
+    if (s.beans >= 1000) {
       quickDashWindowTimer = 3.8;
       quickDashWrap.classList.remove('hidden');
     } else {
@@ -1212,14 +1466,19 @@ function startNewRun(heroId, startDistMeters = 0, boostMeters = 0) {
 }
 
 const hudHealBtn = document.getElementById('hudHealBtn');
+const hudHealLbl = document.getElementById('hudHealLbl');
 const pauseHealStock = document.getElementById('pauseHealStock');
 const pauseBuyHealBtn = document.getElementById('pauseBuyHealBtn');
+const goDeathDashRow = document.getElementById('goDeathDashRow');
+const goDeath400Btn = document.getElementById('goDeath400Btn');
+const goDeath800Btn = document.getElementById('goDeath800Btn');
 
 function refreshHealSupplyUI() {
   const used = runStats.healBuysUsed || 0;
   const left = Math.max(0, 3 - used);
   if (hudHealBtn) {
-    setTextCached('hHealTxt', hudHealBtn, `💊+100 (${left}/3)`);
+    const lblEl = hudHealLbl || hudHealBtn;
+    setTextCached('hHealTxt', lblEl, `急救包 +100 (${left}/3)`);
     hudHealBtn.classList.toggle('used-up', left <= 0);
   }
   if (pauseHealStock) pauseHealStock.textContent = `本局剩 ${left}/3`;
@@ -1382,20 +1641,63 @@ function openGameOverModal() {
     reviveUsedNote.classList.remove('hidden-block');
   }
 
+  if (goDeathDashRow) {
+    if (!runStats.deathDashUsed) {
+      goDeathDashRow.classList.remove('hidden-block');
+      if (goDeath400Btn) goDeath400Btn.style.opacity = store.save.beans >= 1000 ? '1' : '0.5';
+      if (goDeath800Btn) goDeath800Btn.style.opacity = store.save.beans >= 2000 ? '1' : '0.5';
+    } else {
+      goDeathDashRow.classList.add('hidden-block');
+    }
+  }
+
   gameOverOverlay.classList.remove('hidden');
 }
 
-// ==================== SIMPLE IN-PAGE SHARE IMAGE MODAL & READY-TO-START REVIVE ====================
+function triggerPostDeathDashFromModal(meters, cost) {
+  if (state !== 'GAMEOVER' || runStats.deathDashUsed) return;
+  ensureAudio();
+  const s = store.save;
+  if (s.beans < cost) {
+    showToast(`🌿 绿豆不足 (需 ${cost}🌿)！`);
+    return;
+  }
+  s.beans -= cost;
+  store.markMutatedAndSave(true);
+  runStats.deathDashUsed = true;
+  deathDashActive = true;
+  gameOverOverlay.classList.add('hidden');
+  headStartTargetDist = runStats.dist + meters;
+  player.hp = 1;
+  player.regenPool = 0;
+  player.dotPool = 0;
+  player.invulnTimer = 25;
+  player.angle = 0;
+  enemyShots.length = 0;
+  bossHazards.length = 0;
+  state = 'PLAYING';
+  playSfx('hyper');
+  showToast(`🔥 死亡终极冲刺 ${meters}m 爆发！！`);
+  refreshBuffChips();
+  updateTopHUD();
+}
+
+if (goDeath400Btn) goDeath400Btn.addEventListener('click', () => triggerPostDeathDashFromModal(400, 1000));
+if (goDeath800Btn) goDeath800Btn.addEventListener('click', () => triggerPostDeathDashFromModal(800, 2000));
+
+// ==================== SIMPLE IN-PAGE SHARE IMAGE & LINK MODAL + READY-TO-START REVIVE ====================
 let pendingShare = null;
 let currentShareMode = 'hub'; // 'hub' | 'revive'
 
 const shareOverlay = document.getElementById('shareOverlay');
 const shareCloseBtn = document.getElementById('shareCloseBtn');
 const shareSaveImgBtn = document.getElementById('shareSaveImgBtn');
+const shareCopyLinkBtn = document.getElementById('shareCopyLinkBtn');
 const shareReviveReadyBtn = document.getElementById('shareReviveReadyBtn');
 const shareSavedHint = document.getElementById('shareSavedHint');
 const inPageSharePosterImg = document.getElementById('inPageSharePosterImg');
 const goOpenShareBtn = document.getElementById('goOpenShareBtn');
+const SHARE_GAME_URL = 'https://nailong.openwaifu-agent.uk';
 
 function openCleanShareModal(mode = 'hub') {
   ensureAudio();
@@ -1403,8 +1705,8 @@ function openCleanShareModal(mode = 'hub') {
   currentShareMode = mode;
   if (shareSavedHint) {
     shareSavedHint.textContent = mode === 'revive'
-      ? '点击「保存分享图」即可解锁本局满血复活！'
-      : '长按图片或点击下方按钮保存分享图';
+      ? '保存分享图或复制链接，即可解锁本局满血复活！'
+      : '支持保存二维码分享图或直接复制游戏链接';
   }
   if (shareReviveReadyBtn) {
     // In revive mode, unlock the Ready-to-Start button as soon as they save (or show it right after saving!)
@@ -1482,11 +1784,39 @@ function executeReadyShareRevive() {
 
 function checkPendingShareOnReturn() {}
 
+function copyShareGameLink() {
+  ensureAudio();
+  playSfx('crate');
+  const shareText = `快来挑战《鹈鹕测试大乱斗》！在线即玩：${SHARE_GAME_URL}`;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(shareText).catch(() => {});
+  } else {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = shareText;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (_) {}
+  }
+  if (currentShareMode === 'revive' && state === 'GAMEOVER' && !runStats.reviveUsed) {
+    if (shareSavedHint) shareSavedHint.textContent = '✅ 游戏链接已复制！准备好后点击下方按钮满血复活！';
+    if (shareReviveReadyBtn) shareReviveReadyBtn.classList.remove('hidden-block');
+  } else {
+    if (shareSavedHint) shareSavedHint.textContent = `✅ 已复制分享链接：${SHARE_GAME_URL}`;
+    showToast('🔗 分享链接已复制！');
+  }
+}
+
 if (goOpenShareBtn) {
   goOpenShareBtn.addEventListener('click', () => openCleanShareModal('revive'));
 }
 if (shareSaveImgBtn) {
   shareSaveImgBtn.addEventListener('click', saveSharePosterPng);
+}
+if (shareCopyLinkBtn) {
+  shareCopyLinkBtn.addEventListener('click', copyShareGameLink);
 }
 if (shareReviveReadyBtn) {
   shareReviveReadyBtn.addEventListener('click', executeReadyShareRevive);
@@ -1602,13 +1932,13 @@ function trySpawnTrackPropsAt(chunkDist, spawnX) {
     }
   }
 
-  // 2. Special Offensive Props (62% float slowly down from the sky on Parachutes, 38% road height!)
-  if (!hasActivePropBuff && chunkDist >= nextPropDist) {
-    nextPropDist = chunkDist + 295 + Math.floor(Math.random() * 95);
-    const isParachute = Math.random() < 0.62;
-    const px = isParachute ? (player.x + 310 + Math.random() * 90) : (spawnX + 185);
+  // 2. Rich Track Props (Spawn reliably every 130~190m even during Hyper Dash or active buffs!)
+  if (chunkDist >= nextPropDist) {
+    nextPropDist = chunkDist + 130 + Math.floor(Math.random() * 60);
+    const isParachute = Math.random() < 0.58;
+    const px = spawnX + 165;
     const roadY = getBaseSurfaceY(px);
-    const py = isParachute ? (roadY - 245) : (roadY - 94);
+    const py = isParachute ? (roadY - 195) : (roadY - 94);
     const pick = WORLD_PROP_POOL[Math.floor(Math.random() * WORLD_PROP_POOL.length)];
     worldProps.push({
       x: px,
@@ -1634,27 +1964,8 @@ function spawnWorldAhead() {
   const grad = getSurvivalGradient(runStats.singleRunDist);
   const gapStep = grad.chunkGap;
 
-  if (activeBoss) {
-    while (nextSpawnX < player.x + 1450) {
-      const chunkDist = Math.max(0, (nextSpawnX - 120) / 18);
-      trySpawnTrackPropsAt(chunkDist, nextSpawnX); // Spawns special props at exact normal frequency during Boss fights!
-      const gx = nextSpawnX + 185;
-      const gy = getBaseSurfaceY(gx);
-      if (Math.random() < 0.5) {
-      } else {
-      }
-      if (grad.tier >= 2 && Math.random() < 0.55) {
-        laserGates.push({ x: gx + 175, hacked: false });
-      }
-      if (grad.tier >= 3 && Math.random() < 0.58) {
-        enemyShots.push({ kind: 'spike_roller', x: gx + 255, y: getBaseSurfaceY(gx + 255), vx: -(170 + grad.tier * 32), parried: false, rot: 0 });
-      }
-      nextSpawnX += Math.max(300, 395 - grad.tier * 16);
-    }
-    return;
-  }
-
-  while (nextSpawnX < player.x + 1550) {
+  // 100% FULL stage spawning at all times (normal, Hyper Dash, HeadStart, AND Boss fights!)
+  while (nextSpawnX < player.x + 1650) {
     const st = getStageForWorldX(nextSpawnX);
     const chunkDist = Math.max(0, (nextSpawnX - 120) / 18);
     const r = Math.random();
@@ -1662,7 +1973,8 @@ function spawnWorldAhead() {
     trySpawnTrackPropsAt(chunkDist, nextSpawnX);
 
     // Pure Distance-Scaled Ambush Saws & Staggered High+Low Crossfire!
-    const willBePit = (st.id === 'site' && r < 0.34) || (st.id === 'volcano' && r < 0.36);
+    const allowPit = !activeBoss || player.hyperDashActive;
+    const willBePit = allowPit && ((st.id === 'site' && r < 0.34) || (st.id === 'volcano' && r < 0.36));
     if (!willBePit && Math.random() < grad.ambushProb) {
       const hx = nextSpawnX + 135;
       const sawSpd = -(165 + grad.tier * 38);
@@ -1689,7 +2001,7 @@ function spawnWorldAhead() {
         }
         for (let i = 0; i < 4; i++) {
           const bx = sx + 60 + i * 46;
-          if (beans.length < 90) beans.push({ x: bx, y: getBaseSurfaceY(bx) - 172, val: 1, giant: i === 2, taken: false });
+          if (beans.length < 280) beans.push({ x: bx, y: getBaseSurfaceY(bx) - 172, val: 1, giant: i === 2, taken: false });
         }
       } else {
         const fx = nextSpawnX + 50;
@@ -1743,7 +2055,7 @@ function spawnWorldAhead() {
         }
         for (let i = 0; i < 4; i++) {
           const bx = ix + 95 + i * 44;
-          if (beans.length < 90) beans.push({ x: bx, y: getBaseSurfaceY(bx) - 174, val: 1, giant: i === 3, taken: false });
+          if (beans.length < 280) beans.push({ x: bx, y: getBaseSurfaceY(bx) - 174, val: 1, giant: i === 3, taken: false });
         }
       } else {
         spawnAerialDronePair(ix + 140, 2);
@@ -1778,7 +2090,7 @@ function spawnWorldAhead() {
       }
       for (let i = 0; i < 4; i++) {
         const jx = bx + 115 + i * 44;
-        if (beans.length < 90) beans.push({ x: jx, y: getBaseSurfaceY(jx) - 165, val: 1, giant: i === 3, taken: false });
+        if (beans.length < 280) beans.push({ x: jx, y: getBaseSurfaceY(jx) - 165, val: 1, giant: i === 3, taken: false });
       }
       nextSpawnX += gapStep;
     } else {
@@ -1970,6 +2282,7 @@ if (hubShareBtn) {
 
 // ==================== CONTROLS, HOLD-TO-RAM HYPER DASH & 5 TALENTS ====================
 function getMaxJumps() {
+  if (player.skyWingsTimer > 0) return 5;
   return getHero().id === 'hakimi' ? 4 : 2;
 }
 
@@ -2383,10 +2696,10 @@ function fireNailoongFlamePulse(dtSlice) {
   }
   if (activeBoss && activeBoss.worldX > player.x - 380 && activeBoss.worldX < flameEnd + 90) {
     activeBoss.flameTick = (activeBoss.flameTick || 0) + dtSlice;
-    if (activeBoss.flameTick >= 0.18) {
+    if (activeBoss.flameTick >= 0.16) {
       activeBoss.flameTick = 0;
       handlePlayerBossInteraction(activeBoss, getBossCallbacks(), 'skill');
-      hitBoss(6.5, false, false);
+      hitBoss(14.5, false, false, true);
     }
   }
 }
@@ -2452,9 +2765,9 @@ function onSkillPress() {
     player.boostTimer = Math.max(player.boostTimer, 0.9);
     playSfx('jump');
     playGentleSkillAccent('hakimi', Boolean(activeBoss));
-    pushCapped(shockwaves, { x: player.x, y: player.y, r: 14, maxR: 165, life: 0.30, color: '#f472b6', harmless: false }, 12);
-    if (activeBoss && superBonusTimer <= 0 && Math.abs(activeBoss.worldX - player.x) < 280) hitBoss(18, false, false);
-    addPopup('🐾 曼波踏空四连跳!', player.x + 28, player.y - 94, '#fda4af', 19);
+    spawnAlliedMaodieSwarm(6);
+    pushCapped(shockwaves, { x: player.x, y: player.y, r: 14, maxR: 245, life: 0.32, color: '#fb923c', harmless: false }, 12);
+    addPopup('🐱 狂丢圆头耄耋!!', player.x + 28, player.y - 96, '#fdba74', 19);
   }
   syncControlsUI();
 }
@@ -2499,11 +2812,18 @@ canvas.addEventListener('pointerup', () => { jumpHeld = false; onActionRelease()
 
 window.addEventListener('keydown', (e) => {
   const activeTag = document.activeElement ? document.activeElement.tagName : '';
-  if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || !authOverlay.classList.contains('hidden') || !contactOverlay.classList.contains('hidden') || (rankOverlay && !rankOverlay.classList.contains('hidden'))) {
+  const anyModalOpen = !authOverlay.classList.contains('hidden')
+    || !contactOverlay.classList.contains('hidden')
+    || (rankOverlay && !rankOverlay.classList.contains('hidden'))
+    || (talentOverlay && !talentOverlay.classList.contains('hidden'))
+    || (shareOverlay && !shareOverlay.classList.contains('hidden'));
+  if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || anyModalOpen) {
     if (e.code === 'Escape') {
       closeAuthModal();
       contactOverlay.classList.add('hidden');
       if (rankOverlay) rankOverlay.classList.add('hidden');
+      closeTalentModal();
+      closeCleanShareModal();
     }
     return;
   }
@@ -2526,20 +2846,22 @@ window.addEventListener('keydown', (e) => {
   if (state !== 'PLAYING') return;
   if (e.code === 'Space' || e.code === 'KeyW' || e.code === 'ArrowUp') {
     e.preventDefault(); jumpHeld = true; player.jumpBufferTimer = 0.14; doJump();
-  } else if (e.code === 'KeyK' || e.code === 'KeyE' || e.code === 'ShiftLeft') {
+  } else if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.key === 'Shift' || e.code === 'KeyR' || e.code === 'KeyQ') {
+    e.preventDefault(); onHyperDashPress();
+  } else if (e.code === 'KeyK' || e.code === 'KeyE') {
     e.preventDefault(); onSkillPress();
   } else if (e.code === 'KeyJ' || e.code === 'KeyF' || e.code === 'Enter') {
     e.preventDefault(); onActionPress();
-  } else if (e.code === 'KeyR' || e.code === 'KeyQ') {
-    e.preventDefault(); onHyperDashPress();
+  } else if (e.code === 'KeyH' || e.code === 'Digit1') {
+    e.preventDefault(); tryBuyInRunHealSupply();
   }
 });
 
 window.addEventListener('keyup', (e) => {
   if (e.code === 'Space' || e.code === 'KeyW' || e.code === 'ArrowUp') jumpHeld = false;
-  if (e.code === 'KeyK' || e.code === 'KeyE' || e.code === 'ShiftLeft') onSkillRelease();
+  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.key === 'Shift' || e.code === 'KeyR' || e.code === 'KeyQ') onHyperDashRelease();
+  if (e.code === 'KeyK' || e.code === 'KeyE') onSkillRelease();
   if (e.code === 'KeyJ' || e.code === 'KeyF' || e.code === 'Enter') onActionRelease();
-  if (e.code === 'KeyR' || e.code === 'KeyQ') onHyperDashRelease();
 });
 
 // ==================== COMBAT, STEEP SURVIVAL DAMAGE & 7-BOSS LIFECYCLE ====================
@@ -2582,13 +2904,48 @@ function hitCashTruck(ct, dmg) {
   }
 }
 
-function takePlayerDamage(rawDmg = 14, isPitFall = false) {
+function enterFinalDyingState() {
+  forceStopHyperDash();
+  state = 'DYING';
+  stopBossBgm();
+  playCriticalMomentVoice('player_death');
+  deathSlowTimer = 1.0;
+  bankRunProgress(true);
+  autoUploadLeaderboardIfBest();
+  pushCapped(flyingDebris, { kind: 'loose_wheel', x: player.x - 20, y: player.y - 24, vx: player.vx * 0.5 - 90, vy: -380, rot: 0, vRot: -12, r: 22, life: 1.8 }, 20);
+  pushCapped(flyingDebris, { kind: 'loose_wheel', x: player.x + 25, y: player.y - 24, vx: player.vx * 0.8 + 140, vy: -440, rot: 0, vRot: 16, r: 22, life: 1.8 }, 20);
+}
+
+function tryTriggerLethalDeathDashOrDie() {
+  if (runStats.deathDashMeters > 0 && !runStats.deathDashUsed) {
+    const meters = runStats.deathDashMeters;
+    runStats.deathDashMeters = 0;
+    runStats.deathDashUsed = true;
+    deathDashActive = true;
+    forceStopHyperDash();
+    headStartTargetDist = runStats.dist + meters;
+    player.hp = 1;
+    player.regenPool = 0;
+    player.dotPool = 0;
+    player.invulnTimer = 25;
+    enemyShots.length = 0;
+    bossHazards.length = 0;
+    playSfx('hyper');
+    showToast(`🔥 死亡终极冲刺触发 · 狂飙 +${meters}m！！`);
+    refreshBuffChips();
+    updateTopHUD();
+    return;
+  }
+  enterFinalDyingState();
+}
+
+function takePlayerDamage(rawDmg = 11, isPitFall = false) {
   if (state !== 'PLAYING' || headStartTargetDist > 0 || superBonusTimer > 0 || player.hyperDashActive) return;
   if (!isPitFall && (player.invulnTimer > 0 || player.giantTimer > 0 || player.rocketDashTimer > 0)) return;
 
   if (player.orbitSawTimer > 0 && player.sawShieldCharges > 0) {
     player.sawShieldCharges = 0;
-    player.invulnTimer = 0.95;
+    player.invulnTimer = 0.85;
     if (isPitFall) { player.vy = -590; player.onGround = false; }
     playSfx('parry');
     projectiles.push({ kind: 'riot_saw', x: player.x + 36, y: player.y - 24, vx: player.vx + 680, vy: 0, r: 23, rot: 0, life: 1.8 });
@@ -2598,8 +2955,10 @@ function takePlayerDamage(rawDmg = 14, isPitFall = false) {
   }
 
   const grad = getSurvivalGradient(runStats.singleRunDist);
-  const baseHit = isPitFall ? 16 : rawDmg;
-  let dmg = Math.max(10, Math.round(baseHit * grad.dmgMult));
+  const baseHit = isPitFall ? 12 : rawDmg;
+  // Strict Anti-One-Shot Cap (<= 24% MaxHP) + Continuous Non-Discrete Split (55% instant + 45% smooth dotPool bleed!)
+  const maxSingleAllowed = Math.max(12, Math.round(player.maxHp * 0.24));
+  let dmg = Math.min(maxSingleAllowed, Math.max(7, Math.round(baseHit * grad.dmgMult)));
 
   if (player.tempShieldHp > 0 && player.tempShieldTimer > 0) {
     const absorbed = Math.min(player.tempShieldHp, dmg);
@@ -2607,7 +2966,7 @@ function takePlayerDamage(rawDmg = 14, isPitFall = false) {
     dmg -= absorbed;
     if (player.tempShieldHp <= 0) player.tempShieldTimer = 0;
     if (dmg <= 0) {
-      player.invulnTimer = 0.72;
+      player.invulnTimer = 0.58;
       if (isPitFall) { player.vy = -565; player.onGround = false; }
       playSfx('parry');
       addPopup(`🛡️ 护盾抵消 -${absorbed}!`, player.x + 18, player.y - 96, '#38bdf8', 18);
@@ -2617,39 +2976,34 @@ function takePlayerDamage(rawDmg = 14, isPitFall = false) {
     }
   }
 
-  player.hp = Math.max(0, player.hp - dmg);
-  player.regenPool = Math.max(0, player.regenPool * 0.25);
-  player.vx = Math.min(player.vx, 235);
-  player.vy = isPitFall ? -565 : -210;
+  const instantDmg = Math.max(4, Math.round(dmg * 0.55));
+  const smoothBleed = Math.max(0, dmg - instantDmg);
+  player.hp = Math.max(0, player.hp - instantDmg);
+  player.dotPool = Math.min(player.maxHp * 0.45, (player.dotPool || 0) + smoothBleed);
+  player.regenPool = Math.max(0, player.regenPool * 0.45);
+  player.vx = Math.min(player.vx, 255);
+  player.vy = isPitFall ? -565 : -190;
   player.onGround = false;
   player.onRail = null;
-  player.invulnTimer = 0.78; // Snappy 0.78s i-frames so consecutive mistakes truly punish!
+  player.invulnTimer = 0.52;
   combo = 0; comboTag.classList.add('hidden');
   player.flameHolding = false;
   player.flameBurstTimer = 0;
 
   hurtOverlay.style.opacity = '1';
-  setTimeout(() => { hurtOverlay.style.opacity = '0'; }, 210);
+  setTimeout(() => { hurtOverlay.style.opacity = '0'; }, 190);
   hpBarBox.classList.remove('hurt-shake');
   void hpBarBox.offsetWidth;
   hpBarBox.classList.add('hurt-shake');
 
-  hitStopTimer = 0.04; shakeTime = 0.22; shakeMag = 11;
-  player.hurtPoseTimer = 0.45;
+  hitStopTimer = 0.03; shakeTime = 0.18; shakeMag = 9;
+  player.hurtPoseTimer = 0.40;
   playSfx('hurt');
-  addPopup(isPitFall ? `⚡坠坑弹起 -${dmg}HP` : `💥 -${dmg} HP`, player.x + 10, player.y - 98, '#fb7185', 19);
+  addPopup(isPitFall ? `⚡坠坑 -${instantDmg}` : `💥 -${instantDmg}`, player.x + 10, player.y - 98, '#fb7185', 18);
   updateTopHUD();
 
   if (player.hp <= 0) {
-    forceStopHyperDash();
-    state = 'DYING';
-    stopBossBgm();
-    playCriticalMomentVoice('player_death');
-    deathSlowTimer = 1.0;
-    bankRunProgress(true);
-    autoUploadLeaderboardIfBest();
-    pushCapped(flyingDebris, { kind: 'loose_wheel', x: player.x - 20, y: player.y - 24, vx: player.vx * 0.5 - 90, vy: -380, rot: 0, vRot: -12, r: 22, life: 1.8 }, 20);
-    pushCapped(flyingDebris, { kind: 'loose_wheel', x: player.x + 25, y: player.y - 24, vx: player.vx * 0.8 + 140, vy: -440, rot: 0, vRot: 16, r: 22, life: 1.8 }, 20);
+    tryTriggerLethalDeathDashOrDie();
   }
 }
 
@@ -2696,13 +3050,6 @@ function refreshBossHudUI() {
 }
 
 function drawRandomBossTemplate() {
-  if (location.hostname === '127.0.0.1' || location.hostname === 'localhost') {
-    const qaKind = new URLSearchParams(location.search).get('qaBoss');
-    if (qaKind) {
-      const found = BOSS_ROSTER.find((b) => b.kind === qaKind);
-      if (found) return found;
-    }
-  }
   if (!bossBag || bossBag.length === 0) {
     bossBag = BOSS_ROSTER.map((_, i) => i);
     for (let i = bossBag.length - 1; i > 0; i--) {
@@ -2720,20 +3067,23 @@ function drawRandomBossTemplate() {
 }
 
 function spawnStageBoss() {
-  if (superBonusTimer > 0 || headStartTargetDist > 0) return;
+  if (superBonusTimer > 0) return;
   const tpl = drawRandomBossTemplate();
   const encIdx = bossCycleCount;
   bossCycleCount += 1;
-  const scaledHp = Math.round(205 + encIdx * 68 + runStats.singleRunDist * 0.16);
+  const grad = getSurvivalGradient(runStats.singleRunDist);
+  // Boss HP scales directly with the Difficulty Coefficient (grad.dispMult) — Parry deals flat dmg so 铁山靠 never trivializes late Bosses!
+  const baseTplHp = tpl.hp || 240;
+  const scaledHp = Math.round(baseTplHp * (0.85 + 0.55 * grad.dispMult) + encIdx * 38);
   const tierLabels = ['初阶', '次阶', '中阶', '强敌', '狂暴', '霸主'];
   const dynTierLbl = tierLabels[Math.min(tierLabels.length - 1, encIdx)];
   activeBoss = {
     tier: Math.min(6, encIdx + 1), tierLbl: dynTierLbl, tierBg: tpl.tierBg,
     kind: tpl.kind, sprite: tpl.sprite, name: tpl.name,
     maxHp: scaledHp, hp: scaledHp,
-    dmgRate: 21 + Math.min(10, encIdx * 1.8), dmgBudget: 42, maxBudget: 58,
+    dmgRate: 28 + Math.min(18, encIdx * 2.5), dmgBudget: 56, maxBudget: 78,
     phase: 1, maxPhases: encIdx >= 2 ? 3 : 2,
-    reward: 58 + encIdx * 22,
+    reward: 65 + encIdx * 28,
     worldX: player.x + 335, yOff: 0,
     skillIdx: 0, minionTimer: 5.5,
     stunTimer: 0, flashTimer: 0
@@ -2748,20 +3098,24 @@ function spawnStageBoss() {
   playCriticalMomentVoice('boss_spawn', tpl.kind);
 }
 
-function hitBoss(dmg, causesStun = false, isCounter = false) {
+function hitBoss(dmg, causesStun = false, isCounter = false, isSkill = false) {
   if (!activeBoss) return;
   let dealt = 0;
   if (isCounter) {
+    // Parry is a flat guard-break + stun opener (~18~32 HP), never % maxHp!
     dealt = dmg;
+  } else if (isSkill) {
+    // Hero Active Skills are the Primary Boss-Killer DPS (bypass dmgBudget + gain +40% bonus on stunned Bosses!)
+    const stunMult = activeBoss.stunTimer > 0 ? 1.40 : 1.0;
+    dealt = dmg * stunMult;
   } else {
-    const mult = activeBoss.stunTimer > 0 ? 1.35 : 1.0;
+    const mult = activeBoss.stunTimer > 0 ? 1.25 : 1.0;
     const raw = dmg * mult;
     if (activeBoss.dmgBudget >= raw) {
       dealt = raw;
       activeBoss.dmgBudget -= raw;
     } else {
-      // Never silently swallow player attacks to 0 — always deal visible guaranteed damage!
-      dealt = Math.max(raw * 0.55, activeBoss.dmgBudget);
+      dealt = Math.max(raw * 0.50, activeBoss.dmgBudget);
       activeBoss.dmgBudget = 0;
     }
   }
@@ -2893,9 +3247,10 @@ function updateTopHUD() {
 
   const pct = Math.round(superBonusTimer > 0 ? (superBonusTimer / SUPER_BONUS_DURATION) * 100 : superCharge);
   setStyleCached('supW', superBarFill, 'width', `${Math.min(100, Math.max(0, pct))}%`);
+  const supTalentPct = getTalentLvFromSave(store.save, 'superCharge') * 5 + (activeRunHeroId === 'pelican' ? 10 : 0);
   const supTxt = superBonusTimer > 0
     ? `🌈 超级奖励 ${superBonusTimer.toFixed(1)}s`
-    : `🌈 超级奖励 ${pct}%`;
+    : `🌈 超级奖励 ${pct}%${supTalentPct > 0 ? ` (+${supTalentPct}%)` : ''}`;
   setTextCached('supLbl', superBarLbl, supTxt);
 }
 
@@ -2962,6 +3317,37 @@ function update(realDt) {
     player.regenPool = Math.max(0, player.regenPool - tickHeal);
   } else if (player.hp >= player.maxHp) {
     player.regenPool = 0;
+  }
+
+  // Talent #3: 💚 Auto HP Regen every 5.0s (0 / 1 / 2 / 3 / 4 / 5 HP per 5s)
+  const autoRegenPer5s = getAutoRegenPer5sFromSave(store.save);
+  if (autoRegenPer5s > 0 && state === 'PLAYING') {
+    player.autoRegenTimer = (player.autoRegenTimer ?? 5.0) - realDt;
+    if (player.autoRegenTimer <= 0) {
+      player.autoRegenTimer += 5.0;
+      if (player.hp < player.maxHp) {
+        if (player.dotPool > 0) player.dotPool = Math.max(0, player.dotPool - autoRegenPer5s * 0.5);
+        player.hp = Math.min(player.maxHp, player.hp + autoRegenPer5s);
+        addPopup(`💚+${autoRegenPer5s}`, player.x + 12, player.y - 88, '#4ade80', 15);
+      }
+    }
+  }
+
+  // Smooth Continuous Non-Discrete Bleed (dotPool) + Post-550m Gentle Attrition (NEVER sudden one-shots!)
+  if (state === 'PLAYING' && superBonusTimer <= 0 && headStartTargetDist <= 0 && !player.hyperDashActive) {
+    if (player.dotPool && player.dotPool > 0.01) {
+      const bleedStep = Math.min(player.dotPool, (player.dotPool * 0.85 + 4.5) * realDt);
+      player.dotPool = Math.max(0, player.dotPool - bleedStep);
+      player.hp = Math.max(0, player.hp - bleedStep);
+      if (player.hp <= 0) {
+        tryTriggerLethalDeathDashOrDie();
+        if (state === 'DYING') return;
+      }
+    }
+    const curEnvDrain = getSurvivalGradient(runStats.singleRunDist).envDrain || 0;
+    if (curEnvDrain > 0 && player.hp > 1.5 && player.tempShieldHp <= 0) {
+      player.hp = Math.max(1.2, player.hp - curEnvDrain * realDt);
+    }
   }
   player.displayHp += (player.hp - player.displayHp) * Math.min(1, realDt * 13);
   if (player.trailHp > player.displayHp) {
@@ -3149,7 +3535,12 @@ function update(realDt) {
       for (let i = 0; i < cashTrucks.length; i++) {
         if (!cashTrucks[i].dead && Math.abs(cashTrucks[i].x - player.x) < 150) hitCashTruck(cashTrucks[i], 10);
       }
-      enemyShots.length = 0;
+      for (let i = 0; i < enemyShots.length; i++) {
+        if (!enemyShots[i].dead && Math.abs(enemyShots[i].x - player.x) < 165) enemyShots[i].dead = true;
+      }
+      for (let i = 0; i < laserGates.length; i++) {
+        if (!laserGates[i].hacked && Math.abs(laserGates[i].x - player.x) < 165) { laserGates[i].hacked = true; laserGates[i].passed = true; }
+      }
 
       // Against Boss: Drive Boss directly into Steel Containment Wall in front of bike (ZERO player.x teleport!)
       if (activeBoss && superBonusTimer <= 0) {
@@ -3177,9 +3568,9 @@ function update(realDt) {
             r: 18, life: 0.28, maxLife: 0.28
           }, 30);
           if (activeBoss.hp <= floorHp + 1) {
-            addPopup('💥 已抵墙削至残血 · 收手终结它!', activeBoss.worldX - 55, getBaseSurfaceY(wallX) - 115, '#fde047', 17);
+            addPopup('💥 已削至残血 · 松手终结!', activeBoss.worldX - 55, getBaseSurfaceY(wallX) - 115, '#fde047', 17);
           } else {
-            addPopup('💥 抵墙狂创!!', activeBoss.worldX - 35, getBaseSurfaceY(wallX) - 108, '#fde047', 18);
+            addPopup('💥 怼边狂创!!', activeBoss.worldX - 35, getBaseSurfaceY(wallX) - 108, '#fde047', 18);
           }
         }
       }
@@ -3282,7 +3673,7 @@ function update(realDt) {
     for (let i = 0; i < enemyShots.length; i++) {
       const sh = enemyShots[i];
       if (!sh.dead && sh.x > player.x - 20 && sh.x < player.x + 420) {
-        if (beans.length < 95) beans.push({ x: sh.x, y: sh.y, val: 2, giant: true, taken: false });
+        if (beans.length < 280) beans.push({ x: sh.x, y: sh.y, val: 2, giant: true, taken: false });
         sh.dead = true;
       }
     }
@@ -3301,8 +3692,10 @@ function update(realDt) {
     }
     if (player.swallowVortexTimer <= 0 && player.swallowedCount === 0) {
       const pBack = Boolean(activeBoss && superBonusTimer <= 0 && activeBoss.worldX < player.x);
-      projectiles.push({ kind: 'fish_shot', x: player.x + (pBack ? -30 : 50), y: mouthY + 12, vx: player.vx + (pBack ? -620 : 760), vy: -50, r: 18, rot: 0, life: 1.8 });
-      pushCapped(shockwaves, { x: mouthX + 10, y: mouthY + 20, r: 12, maxR: 150, life: 0.25, color: '#38bdf8', harmless: false }, 12);
+      for (let w = 0; w < 3; w++) {
+        projectiles.push({ kind: 'fish_shot', x: player.x + (pBack ? -30 - w * 22 : 50 + w * 22), y: mouthY + 10 - w * 8, vx: player.vx + (pBack ? -640 : 780), vy: -45 - w * 35, r: 18, rot: 0, life: 1.9, isSkillShot: true });
+      }
+      pushCapped(shockwaves, { x: mouthX + 10, y: mouthY + 20, r: 12, maxR: 170, life: 0.25, color: '#38bdf8', harmless: false }, 12);
     }
   }
 
@@ -3360,7 +3753,7 @@ function update(realDt) {
       }
       if (activeBoss && Math.abs(activeBoss.worldX - cx) < tongueR + 60) {
         handlePlayerBossInteraction(activeBoss, getBossCallbacks(), 'skill');
-        hitBoss(5.8, false, false);
+        hitBoss(13.5, false, false, true);
       }
     }
   }
@@ -3385,13 +3778,48 @@ function update(realDt) {
     showToast(`⚠️ 突破 ${curKmStage - 1}km · ${grad.label}！`);
   }
 
-  let desiredVx = player.baseSpeed + grad.speedAdd;
-  if (headStartTargetDist > 0) desiredVx = 1380;
-  else if (player.hyperDashActive) desiredVx = activeBoss && activeBoss.pinnedByHyper ? 340 : 960;
-  else if (player.rocketDashTimer > 0) desiredVx = Math.max(desiredVx * 1.42, 920);
-  else if (superBonusTimer > 0) desiredVx = Math.max(desiredVx * 1.15, 520);
-  else if (player.boostTimer > 0 || player.giantTimer > 0 || onIce) desiredVx *= onIce ? 1.24 : 1.20;
-  else if (inMud) desiredVx *= 0.72;
+  if (player.midasTimer > 0) player.midasTimer = Math.max(0, player.midasTimer - realDt);
+  if (player.skyWingsTimer > 0) {
+    player.skyWingsTimer = Math.max(0, player.skyWingsTimer - realDt);
+    if (!player.onGround && player.vy > 75) player.vy = 75;
+  }
+  if (player.thunderAuraTimer > 0) {
+    player.thunderAuraTimer = Math.max(0, player.thunderAuraTimer - realDt);
+    player.thunderAuraTick = (player.thunderAuraTick || 0) - realDt;
+    if (player.thunderAuraTick <= 0) {
+      player.thunderAuraTick = 0.22;
+      for (let i = 0; i < enemies.length; i++) {
+        if (!enemies[i].hit && Math.abs(enemies[i].x - player.x) < 220) {
+          enemies[i].shielded = false;
+          defeatEnemy(enemies[i]);
+        }
+      }
+      for (let i = 0; i < laserGates.length; i++) {
+        if (!laserGates[i].hacked && Math.abs(laserGates[i].x - player.x) < 220) {
+          laserGates[i].hacked = true;
+          laserGates[i].passed = true;
+        }
+      }
+      for (let i = 0; i < enemyShots.length; i++) {
+        if (!enemyShots[i].dead && Math.abs(enemyShots[i].x - player.x) < 200) enemyShots[i].dead = true;
+      }
+      if (activeBoss && superBonusTimer <= 0 && Math.abs(activeBoss.worldX - player.x) < 280) {
+        hitBoss(9.5, false, false, true);
+      }
+    }
+  }
+
+  const curNormalVx = player.baseSpeed + grad.speedAdd;
+  let desiredVx = curNormalVx;
+  if (headStartTargetDist > 0) desiredVx = Math.round(curNormalVx * 3.15);
+  else if (player.hyperDashActive) {
+    // Anchored directly to current normal speed — distinctly faster even when pinning a Boss!
+    desiredVx = Math.round(curNormalVx * (activeBoss && activeBoss.pinnedByHyper ? 1.78 : 2.35));
+  }
+  else if (player.rocketDashTimer > 0) desiredVx = Math.round(curNormalVx * 2.15);
+  else if (superBonusTimer > 0) desiredVx = Math.round(curNormalVx * 1.42);
+  else if (player.boostTimer > 0 || player.giantTimer > 0 || player.skyWingsTimer > 0 || onIce) desiredVx *= onIce ? 1.22 : 1.18;
+  else if (inMud) desiredVx *= 0.75;
   player.vx += (desiredVx - player.vx) * Math.min(1, dt * 8);
 
   if (headStartTargetDist > 0) {
@@ -3402,6 +3830,13 @@ function update(realDt) {
     for (let i = 0; i < enemies.length; i++) if (!enemies[i].hit && Math.abs(enemies[i].x - player.x) < 150) defeatEnemy(enemies[i]);
     if (runStats.dist >= headStartTargetDist) {
       headStartTargetDist = 0;
+      if (deathDashActive) {
+        deathDashActive = false;
+        player.hp = 0;
+        refreshBuffChips();
+        enterFinalDyingState();
+        return;
+      }
       player.invulnTimer = 1.4;
       pushCapped(shockwaves, { x: player.x, y: player.y, r: 20, maxR: 360, life: 0.36, color: '#fde047', harmless: false }, 12);
       playSfx('crater');
@@ -3467,9 +3902,9 @@ function update(realDt) {
     }
   }
 
-  if (!activeBoss && superBonusTimer <= 0 && headStartTargetDist <= 0 && runStats.dist >= nextTruckDist) {
-    nextTruckDist = runStats.dist + 420;
-    const tx = player.x + 430;
+  if (!activeBoss && superBonusTimer <= 0 && runStats.dist >= nextTruckDist) {
+    nextTruckDist = runStats.dist + 380;
+    const tx = player.x + 480;
     cashTrucks.push({ x: tx, y: getBaseSurfaceY(tx), hp: 6, dead: false, flash: 0 });
     showToast('🚨 装甲运钞车！用技能或踩顶打爆它!');
   }
@@ -3740,11 +4175,11 @@ function update(realDt) {
         else pr.life = 0;
       }
       if (activeBoss && pr.life > 0 && (pr.bossHitCd || 0) <= 0 && Math.hypot(pr.x - activeBoss.worldX, pr.y - (getBaseSurfaceY(activeBoss.worldX) - 54 + activeBoss.yOff)) < pr.r + 65) {
-        pr.bossHitCd = 0.45;
+        pr.bossHitCd = 0.42;
         pr.vy = -620;
         playSfx('parry');
         handlePlayerBossInteraction(activeBoss, getBossCallbacks(), 'projectile');
-        hitBoss(22, true, false);
+        hitBoss(48, true, false, true);
       }
       continue;
     } else if (pr.kind === 'riot_saw') {
@@ -3775,11 +4210,13 @@ function update(realDt) {
       pr.bouncesLeft = 0;
       pr.life = 0;
       handlePlayerBossInteraction(activeBoss, getBossCallbacks(), 'projectile');
-      if (pr.kind === 'ikun_pinball') hitBoss(9.5, false, false);
-      else if (pr.kind === 'bowling_mob') hitBoss(24.0, true, false);
-      else if (pr.kind === 'shark_bomb') hitBoss(18.0, true, false);
-      else if (pr.kind === 'riot_saw') hitBoss(16.0, false, false);
-      else hitBoss(10.0, false, false);
+      if (pr.kind === 'ikun_pinball') hitBoss(11.0, false, false);
+      else if (pr.kind === 'bowling_mob') hitBoss(22.0, true, false);
+      else if (pr.kind === 'shark_bomb') hitBoss(44.0, true, false, true);
+      else if (pr.kind === 'mini_maodie') hitBoss(16.0, false, false, true);
+      else if (pr.kind === 'fish_shot') hitBoss(pr.isSkillShot ? 28.0 : 12.0, false, false, Boolean(pr.isSkillShot));
+      else if (pr.kind === 'riot_saw') hitBoss(18.0, false, false);
+      else hitBoss(11.0, false, false);
     }
   }
   compactInPlace(projectiles, (p) => p.life > 0);
@@ -3904,14 +4341,15 @@ function update(realDt) {
     jumpBtn.classList.toggle('glow', jumpGlow);
   }
 
-  // Grounded Bean Collection
-  const magR = (player.magnetTimer > 0 || player.hyperDashActive || superBonusTimer > 0 || headStartTargetDist > 0)
+  // Grounded Bean Collection (+ Midas 3x Gold Jar Boost!)
+  const magR = (player.magnetTimer > 0 || player.midasTimer > 0 || player.hyperDashActive || superBonusTimer > 0 || headStartTargetDist > 0)
     ? 540
     : (player.giantTimer > 0 ? 120 : 62);
 
   for (let i = 0; i < beans.length; i++) {
     const b = beans[i];
     if (b.taken) continue;
+    if (player.midasTimer > 0) b.giant = true;
     if (b.dynamic) {
       b.vy += 920 * dt; b.x += b.vx * dt; b.y += b.vy * dt;
       const gy = getBaseSurfaceY(b.x) - 18;
@@ -4418,6 +4856,7 @@ function render() {
       drawSpaldingWheelOn(ctx, pr.x, pr.y, pr.r, pr.rot);
     } else if (pr.kind === 'riot_saw') drawModel('riotSaw', pr.x, pr.y, pr.rot);
     else if (pr.kind === 'shark_bomb') drawModel('sharkBomb', pr.x, pr.y, Math.atan2(pr.vy, 420) * 0.45);
+    else if (pr.kind === 'mini_maodie') drawModel('mini_maodie', pr.x, pr.y, pr.rot * 0.35, 0.96);
     else if (pr.kind === 'bowling_mob') drawModel(getEnemySpriteKey(pr.mobKind), pr.x, pr.y, pr.rot);
     else if (pr.kind === 'fish_shot') drawModel('fishTorpedo', pr.x, pr.y, Math.atan2(pr.vy, 500) * 0.5);
     else drawSpaldingWheelOn(ctx, pr.x, pr.y, pr.r, pr.rot);
@@ -4441,6 +4880,16 @@ function render() {
     ctx.save();
     ctx.fillStyle = 'rgba(56, 189, 248, 0.34)';
     ctx.beginPath(); ctx.moveTo(mx, my - 18); ctx.lineTo(mx + 410, my - 120); ctx.lineTo(mx + 410, my + 90); ctx.lineTo(mx, my + 22); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+
+  if (player.thunderAuraTimer > 0) {
+    ctx.save();
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 3.5;
+    ctx.beginPath();
+    ctx.arc(player.x + 8, player.y - 44, 78 + Math.sin(performance.now() * 0.03) * 8, 0, Math.PI * 2);
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -4633,3 +5082,9 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+
+try {
+  if (location.search && location.search.includes('qaBoss')) {
+    history.replaceState(null, '', location.pathname);
+  }
+} catch (_) {}

@@ -1,18 +1,23 @@
 // ============================================================================
-// 《鹈鹕测试大乱斗》 — Atomic Local + Cloud Account Save Synchronization Engine
-// Guarantees 100% consistency across `beans`, `heroLv`, `mods`, `bestDist`,
-// `bestSingleRun`, and `maxCheckpoint` using monotonic revision tracking
-// (`localSaveRev`) + serialized single-flight `/api/save` queue.
+// 《鹈鹕测试大乱斗》 — Atomic Local + Cloud Account Save Synchronization Engine (v6.2)
+// Uses HMAC-SHA256 Signed Server Base Snapshots (baseRev, baseIssuedAt, baseSig, baseSave)
+// + Conservation-of-Value 3-Way Conflict Resolution across ALL devices & tabs!
 // ============================================================================
 
-import { VALID_HERO_IDS } from './config.js?v=5.6';
+import { VALID_HERO_IDS, BEAN_TALENTS } from './config.js?v=6.2';
 
 export const SAVE_KEY = 'pelican_brawl_save_v1';
 export const AUTH_KEY = 'pelican_brawl_auth_v1';
+export const SYNC_BASE_KEY = 'pelican_brawl_sync_base_v1';
 export const LOCAL_REG_CNT_KEY = 'pelican_brawl_reg_cnt_v1';
 
+const HERO_CUM_COSTS = { 1: 0, 2: 1000, 3: 2800, 4: 5600, 5: 9800, 6: 15800 };
+const HERO_STEP_COSTS = { 1: 1000, 2: 1800, 3: 2800, 4: 4200, 5: 6000 };
+const MOD_CUM_COSTS = { 0: 0, 1: 500, 2: 1600, 3: 3600 };
+const MOD_STEP_COSTS = { 0: 500, 1: 1100, 2: 2000 };
+
 export const defaultSave = {
-  beans: 150,
+  beans: 2000,
   dashEnergy: 0,
   bestDist: 0,
   bestSingleRun: 0,
@@ -21,7 +26,8 @@ export const defaultSave = {
   selectedHero: 'nailong',
   unlocked: [...VALID_HERO_IDS],
   mods: { claw: 0, nitro: 0, sawBumper: 0, mortarCat: 0 },
-  heroLv: { nailong: 1, ikun: 1, pelican: 1, naiwa: 1, hakimi: 1 }
+  heroLv: { nailong: 1, ikun: 1, pelican: 1, naiwa: 1, hakimi: 1 },
+  talents: { superCharge: 0, maxHpPct: 0, autoRegen: 0 }
 };
 
 export function normalizeSaveObj(parsed, fallback = defaultSave) {
@@ -30,7 +36,8 @@ export function normalizeSaveObj(parsed, fallback = defaultSave) {
       ...fallback,
       unlocked: [...fallback.unlocked],
       mods: { ...fallback.mods },
-      heroLv: { ...fallback.heroLv }
+      heroLv: { ...fallback.heroLv },
+      talents: { ...(fallback.talents || { superCharge: 0, maxHpPct: 0, autoRegen: 0 }) }
     };
   }
   const mergedUnlocked = Array.from(
@@ -53,6 +60,12 @@ export function normalizeSaveObj(parsed, fallback = defaultSave) {
     heroLv[hid] = Math.min(6, Math.max(1, Math.floor(Number(rawHl[hid]) || 1)));
   }
 
+  const rawTalents = (parsed.talents && typeof parsed.talents === 'object') ? parsed.talents : {};
+  const talents = {};
+  for (const t of BEAN_TALENTS) {
+    talents[t.key] = Math.min(t.maxLv, Math.max(0, Math.floor(Number(rawTalents[t.key]) || 0)));
+  }
+
   const candHero = typeof parsed.selectedHero === 'string' && VALID_HERO_IDS.includes(parsed.selectedHero)
     ? parsed.selectedHero
     : 'nailong';
@@ -67,22 +80,93 @@ export function normalizeSaveObj(parsed, fallback = defaultSave) {
     selectedHero: candHero,
     unlocked: mergedUnlocked,
     mods,
-    heroLv
+    heroLv,
+    talents
   };
 }
 
-// Merge monotonic progression fields from cloud without clobbering newer local wallet edits
-function mergeMonotonicFromCloud(localSave, cloudSave) {
-  const c = normalizeSaveObj(cloudSave);
-  localSave.bestDist = Math.max(localSave.bestDist, c.bestDist);
-  localSave.bestSingleRun = Math.max(localSave.bestSingleRun, c.bestSingleRun);
-  localSave.maxCheckpoint = Math.max(localSave.maxCheckpoint, c.maxCheckpoint);
-  for (const k of ['claw', 'nitro', 'sawBumper', 'mortarCat']) {
-    localSave.mods[k] = Math.max(localSave.mods[k] || 0, c.mods[k] || 0);
-  }
+function calcPermCost(sv) {
+  let total = 0;
   for (const h of VALID_HERO_IDS) {
-    localSave.heroLv[h] = Math.max(localSave.heroLv[h] || 1, c.heroLv[h] || 1);
+    const lv = Math.min(6, Math.max(1, Math.floor((sv.heroLv && sv.heroLv[h]) || 1)));
+    total += HERO_CUM_COSTS[lv];
   }
+  for (const k of ['claw', 'nitro', 'sawBumper', 'mortarCat']) {
+    const lv = Math.min(3, Math.max(0, Math.floor((sv.mods && sv.mods[k]) || 0)));
+    total += MOD_CUM_COSTS[lv];
+  }
+  for (const t of BEAN_TALENTS) {
+    const lv = Math.min(t.maxLv, Math.max(0, Math.floor((sv.talents && sv.talents[t.key]) || 0)));
+    total += lv * t.costPerLv;
+  }
+  return total;
+}
+
+// Reapply local in-flight mutations onto a newly received server snapshot without losing clicks or double-charging
+function rebaseLocalDeltaOntoServer(serverSaveRaw, prevBaseRaw, localCurrentRaw) {
+  const srv = normalizeSaveObj(serverSaveRaw);
+  if (!prevBaseRaw) return srv;
+  const base = normalizeSaveObj(prevBaseRaw);
+  const loc = normalizeSaveObj(localCurrentRaw);
+
+  const dDash = Math.round((loc.dashEnergy - base.dashEnergy) * 10) / 10;
+  const paidDash = Math.round(Math.max(0, dDash) * 1000);
+  const paidPerm = Math.max(0, calcPermCost(loc) - calcPermCost(base));
+  const pureBeanDelta = (loc.beans - base.beans) + paidPerm + paidDash;
+
+  let avail = Math.max(0, srv.beans + pureBeanDelta);
+  let mergedDash = srv.dashEnergy;
+  if (dDash > 0) {
+    const roomSec = Math.round(Math.max(0, 30 - srv.dashEnergy) * 10) / 10;
+    const wantSec = Math.min(dDash, roomSec);
+    const cost = Math.round(wantSec * 1000);
+    if (avail >= cost) {
+      mergedDash = Math.round((srv.dashEnergy + wantSec) * 10) / 10;
+      avail -= cost;
+    }
+  } else {
+    mergedDash = Math.max(0, Math.round((srv.dashEnergy + dDash) * 10) / 10);
+  }
+
+  const mergedHl = { ...srv.heroLv };
+  for (const h of VALID_HERO_IDS) {
+    while (mergedHl[h] < loc.heroLv[h] && avail >= HERO_STEP_COSTS[mergedHl[h]]) {
+      avail -= HERO_STEP_COSTS[mergedHl[h]];
+      mergedHl[h] += 1;
+    }
+  }
+  const mergedMods = { ...srv.mods };
+  for (const k of ['claw', 'nitro', 'sawBumper', 'mortarCat']) {
+    while (mergedMods[k] < loc.mods[k] && avail >= MOD_STEP_COSTS[mergedMods[k]]) {
+      avail -= MOD_STEP_COSTS[mergedMods[k]];
+      mergedMods[k] += 1;
+    }
+  }
+  const mergedTalents = { ...srv.talents };
+  for (const t of BEAN_TALENTS) {
+    while (mergedTalents[t.key] < loc.talents[t.key] && avail >= t.costPerLv) {
+      avail -= t.costPerLv;
+      mergedTalents[t.key] += 1;
+    }
+  }
+
+  const bestDist = Math.max(srv.bestDist, loc.bestDist);
+  const bestSingleRun = Math.max(srv.bestSingleRun, loc.bestSingleRun);
+  const maxCp = Math.max(srv.maxCheckpoint, loc.maxCheckpoint, Math.floor(bestDist / 500) * 500);
+
+  return normalizeSaveObj({
+    beans: avail,
+    dashEnergy: mergedDash,
+    bestDist,
+    bestSingleRun,
+    maxCheckpoint: maxCp,
+    selectedCheckpoint: Math.min(maxCp, loc.selectedCheckpoint),
+    selectedHero: loc.selectedHero,
+    unlocked: [...VALID_HERO_IDS],
+    mods: mergedMods,
+    heroLv: mergedHl,
+    talents: mergedTalents
+  });
 }
 
 export function createCloudStore(onUiRefresh) {
@@ -105,6 +189,22 @@ export function createCloudStore(onUiRefresh) {
     }
   } catch (_) {}
 
+  let syncBase = null; // { rev, issuedAtMs, syncSig, save }
+  try {
+    const rawBase = localStorage.getItem(SYNC_BASE_KEY);
+    if (rawBase) {
+      const pb = JSON.parse(rawBase);
+      if (pb && pb.syncSig && pb.rev && pb.issuedAtMs && pb.save) {
+        syncBase = {
+          rev: Number(pb.rev),
+          issuedAtMs: Number(pb.issuedAtMs),
+          syncSig: String(pb.syncSig),
+          save: normalizeSaveObj(pb.save)
+        };
+      }
+    }
+  } catch (_) {}
+
   let localSaveRev = 0;
   let syncInFlight = false;
   let syncQueued = false;
@@ -115,6 +215,23 @@ export function createCloudStore(onUiRefresh) {
   function writeLocal() {
     save = normalizeSaveObj(save);
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (_) {}
+  }
+
+  function recordServerSnapshot(respData) {
+    if (respData && respData.syncSig && respData.rev && respData.issuedAtMs && respData.save) {
+      syncBase = {
+        rev: Number(respData.rev),
+        issuedAtMs: Number(respData.issuedAtMs),
+        syncSig: String(respData.syncSig),
+        save: normalizeSaveObj(respData.save)
+      };
+      try { localStorage.setItem(SYNC_BASE_KEY, JSON.stringify(syncBase)); } catch (_) {}
+    }
+  }
+
+  function clearServerSnapshot() {
+    syncBase = null;
+    try { localStorage.removeItem(SYNC_BASE_KEY); } catch (_) {}
   }
 
   function markMutatedAndSave(immediateCloud = false) {
@@ -139,6 +256,22 @@ export function createCloudStore(onUiRefresh) {
     }, delayMs);
   }
 
+  async function ensureSignedBaseBeforeSync() {
+    if (syncBase && syncBase.syncSig) return true;
+    try {
+      const r = await fetch('/api/auth/me', { headers: { 'Authorization': `Bearer ${authState.token}` } });
+      const d = await r.json();
+      if (r.ok && d && d.ok && d.save) {
+        const prevSnap = syncBase ? syncBase.save : null;
+        recordServerSnapshot(d);
+        save = prevSnap ? rebaseLocalDeltaOntoServer(d.save, prevSnap, save) : normalizeSaveObj(d.save);
+        writeLocal();
+        return Boolean(syncBase && syncBase.syncSig);
+      }
+    } catch (_) {}
+    return false;
+  }
+
   async function syncNow(showFeedback = false, feedbackCb = null) {
     if (!authState.token) return false;
     if (syncInFlight) {
@@ -147,36 +280,50 @@ export function createCloudStore(onUiRefresh) {
       return true;
     }
     syncInFlight = true;
-    const sentRev = localSaveRev;
-    const payloadSave = normalizeSaveObj(save);
 
     let ok = false;
     try {
+      await ensureSignedBaseBeforeSync();
+      const sentRev = localSaveRev;
+      const payloadSave = normalizeSaveObj(save);
+      const reqBody = { save: payloadSave };
+      if (syncBase && syncBase.syncSig) {
+        reqBody.baseRev = syncBase.rev;
+        reqBody.baseIssuedAt = syncBase.issuedAtMs;
+        reqBody.baseSig = syncBase.syncSig;
+        reqBody.baseSave = syncBase.save;
+      }
+
       const resp = await fetch('/api/save', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${authState.token}`
         },
-        body: JSON.stringify({ save: payloadSave }),
+        body: JSON.stringify(reqBody),
         keepalive: true
       });
       const data = await resp.json();
       if (resp.ok && data && data.ok) {
         ok = true;
         if (data.save) {
-          if (localSaveRev === sentRev) {
-            // No local edits occurred while request was in flight -> adopt authoritative cloud save!
+          recordServerSnapshot(data);
+          if (data.needsRebase) {
+            // Adopt authoritative server baseline first
+            save = normalizeSaveObj(data.save);
+          } else if (localSaveRev === sentRev) {
             save = normalizeSaveObj(data.save);
           } else {
-            // Player mutated save locally while in flight -> preserve newer local wallet & queue follow-up!
-            mergeMonotonicFromCloud(save, data.save);
+            // Additional clicks happened while request was in flight -> rebase remaining delta cleanly!
+            save = rebaseLocalDeltaOntoServer(data.save, payloadSave, save);
             syncQueued = true;
           }
           writeLocal();
         }
         if ((showFeedback || queuedShowFeedback) && feedbackCb) {
-          feedbackCb(true, '✅ 存档资源与全部等级已精准同步上云！');
+          feedbackCb(true, data.conflictResolved
+            ? '✅ 多端存档已安全合并同步（零丢豆/零冲突）！'
+            : '✅ 存档资源与全部等级已精准同步上云！');
         }
         queuedShowFeedback = false;
         if (onUiRefresh) onUiRefresh();
@@ -258,6 +405,7 @@ export function createCloudStore(onUiRefresh) {
 
       if (data.save) {
         localSaveRev += 1;
+        recordServerSnapshot(data);
         save = normalizeSaveObj(data.save);
         writeLocal();
       }
@@ -272,6 +420,7 @@ export function createCloudStore(onUiRefresh) {
     if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
     syncQueued = false;
     authState = { username: '', token: '' };
+    clearServerSnapshot();
     try { localStorage.removeItem(AUTH_KEY); } catch (_) {}
     localSaveRev += 1;
     save = normalizeSaveObj(defaultSave);
@@ -282,22 +431,29 @@ export function createCloudStore(onUiRefresh) {
   function pullSessionOnBoot() {
     if (!authState.token) return;
     const bootRev = localSaveRev;
+    const prevBaseSave = syncBase ? syncBase.save : null;
     fetch('/api/auth/me', { headers: { 'Authorization': `Bearer ${authState.token}` } })
       .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {
         if (ok && d && d.ok) {
           authState.username = d.username || authState.username;
           if (d.save) {
-            if (localSaveRev === bootRev) {
-              save = normalizeSaveObj(d.save);
-            } else {
-              mergeMonotonicFromCloud(save, d.save);
+            recordServerSnapshot(d);
+            if (localSaveRev === bootRev && (!prevBaseSave || Number(d.rev || 1) >= (syncBase ? syncBase.rev : 1))) {
+              save = prevBaseSave ? rebaseLocalDeltaOntoServer(d.save, prevBaseSave, save) : normalizeSaveObj(d.save);
+              if (JSON.stringify(save) !== JSON.stringify(normalizeSaveObj(d.save))) {
+                scheduleSync(350);
+              }
+            } else if (prevBaseSave) {
+              save = rebaseLocalDeltaOntoServer(d.save, prevBaseSave, save);
+              scheduleSync(350);
             }
             writeLocal();
           }
           if (onUiRefresh) onUiRefresh();
         } else if (d && d.error === '登录已失效') {
           authState = { username: '', token: '' };
+          clearServerSnapshot();
           try { localStorage.removeItem(AUTH_KEY); } catch (_) {}
           if (onUiRefresh) onUiRefresh();
         }
@@ -307,14 +463,35 @@ export function createCloudStore(onUiRefresh) {
 
   function flushBeacon() {
     writeLocal();
-    if (authState.token && navigator.sendBeacon) {
+    if (authState.token && syncBase && syncBase.syncSig && navigator.sendBeacon) {
       try {
-        const blob = new Blob([JSON.stringify({ token: authState.token, save: normalizeSaveObj(save) })], {
-          type: 'application/json'
-        });
+        const bodyObj = {
+          token: authState.token,
+          save: normalizeSaveObj(save),
+          baseRev: syncBase.rev,
+          baseIssuedAt: syncBase.issuedAtMs,
+          baseSig: syncBase.syncSig,
+          baseSave: syncBase.save
+        };
+        const blob = new Blob([JSON.stringify(bodyObj)], { type: 'application/json' });
         navigator.sendBeacon('/api/save', blob);
       } catch (_) {}
     }
+  }
+
+  let lastFocusPullMs = 0;
+  function pullOnWindowReturn() {
+    if (!authState.token || syncInFlight || debounceTimer) return;
+    const now = Date.now();
+    if (now - lastFocusPullMs < 4000) return;
+    lastFocusPullMs = now;
+    pullSessionOnBoot();
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('focus', pullOnWindowReturn);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) pullOnWindowReturn();
+    });
   }
 
   return {

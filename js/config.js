@@ -25,16 +25,16 @@ export const HEROES = [
     skillIcon: '🏀', skillLbl: '巨型篮球', skillCd: 2.8
   },
   {
-    id: 'pelican', icon: '🦩', name: '背带鹈鹕', tag: '大嘴吞怪',
-    perk: '🦩 重装前排(118HP) · 天赋[大嘴鲸吞小怪化重炮]', cost: 0,
+    id: 'pelican', icon: '🦩', name: '背带鹈鹕', tag: '吞怪+充能',
+    perk: '🦩 重装前排(118HP) · 天赋[大嘴吞怪+超级奖励充能+10%]', cost: 0,
     baseHp: 118, hpStep: 25,
     skillIcon: '🦩', skillLbl: '大嘴吞怪', skillCd: 2.8
   },
   {
-    id: 'hakimi', icon: '🐱', name: '哈基米猫', tag: '多两段跳跃',
-    perk: '🐱 高血身法坦(136HP) · 天赋[四段跳+踏空连跃]', cost: 0,
+    id: 'hakimi', icon: '🐱', name: '哈基米猫', tag: '圆头耄耋',
+    perk: '🐱 高血身法坦(136HP) · 天赋[四段跳+狂丢小圆头耄耋]', cost: 0,
     baseHp: 136, hpStep: 28,
-    skillIcon: '🐾', skillLbl: '踏空连跃', skillCd: 3.4
+    skillIcon: '🐱', skillLbl: '圆头耄耋', skillCd: 3.2
   }
 ];
 
@@ -45,7 +45,9 @@ export function getHeroLvFromSave(save, heroId) {
 
 export function getHeroMaxHpFromSave(save, heroId) {
   const h = HEROES.find((x) => x.id === heroId) || HEROES[0];
-  return (h.baseHp || 100) + (getHeroLvFromSave(save, heroId) - 1) * (h.hpStep || 22);
+  const baseCharHp = (h.baseHp || 100) + (getHeroLvFromSave(save, heroId) - 1) * (h.hpStep || 22);
+  const hpPctLv = Math.min(5, Math.max(0, Math.floor((save && save.talents && save.talents.maxHpPct) || 0)));
+  return Math.round(baseCharHp * (1 + hpPctLv * 0.05));
 }
 
 export function getHeroHpUpgradeCost(lv) {
@@ -61,6 +63,57 @@ export const GARAGE_MODS = [
   { key: 'mortarCat', ico: '🐱', name: '迫击猫', baseDur: 3.8, stepDur: 0.9, costs: [500, 1100, 2000], maxLv: 3 }
 ];
 
+// Green-Bean Permanent Talent System:
+//  1. 🌈 超级奖励充能: +5% charge speed per level (1000🌿/Lv, Max Lv5 -> +25%)
+//  2. ❤️ 全角色生命上限: +5% Max HP for all heroes per level (10000🌿/Lv, Max Lv5 -> +25%)
+//  3. 💚 自动生命回复: +1 HP per 5s per level (20000🌿/Lv, Max Lv5 -> +5 HP / 5s)
+export const BEAN_TALENTS = [
+  {
+    key: 'superCharge',
+    ico: '🌈',
+    name: '超级奖励充能',
+    costPerLv: 1000,
+    maxLv: 5,
+    formatCur(lv) { return `+${lv * 5}%`; },
+    formatNext(lv) { return `+${(lv + 1) * 5}%`; },
+    formatDesc(lv) { return `超级奖励充能速度提高 ${lv * 5}%`; }
+  },
+  {
+    key: 'maxHpPct',
+    ico: '❤️',
+    name: '全角色生命上限',
+    costPerLv: 10000,
+    maxLv: 5,
+    formatCur(lv) { return `+${lv * 5}%`; },
+    formatNext(lv) { return `+${(lv + 1) * 5}%`; },
+    formatDesc(lv) { return `全部角色生命上限增加 ${lv * 5}%`; }
+  },
+  {
+    key: 'autoRegen',
+    ico: '💚',
+    name: '自动生命回复',
+    costPerLv: 20000,
+    maxLv: 5,
+    formatCur(lv) { return `${lv}点/5秒`; },
+    formatNext(lv) { return `${lv + 1}点/5秒`; },
+    formatDesc(lv) { return `每 5 秒自动回复 ${lv} 点生命`; }
+  }
+];
+
+export function getTalentLvFromSave(save, key) {
+  const def = BEAN_TALENTS.find((t) => t.key === key);
+  const maxLv = def ? def.maxLv : 5;
+  return Math.min(maxLv, Math.max(0, Math.floor((save && save.talents && save.talents[key]) || 0)));
+}
+
+export function getSuperChargeSpeedMultFromSave(save) {
+  return +(1 + getTalentLvFromSave(save, 'superCharge') * 0.05).toFixed(2);
+}
+
+export function getAutoRegenPer5sFromSave(save) {
+  return getTalentLvFromSave(save, 'autoRegen');
+}
+
 export function getModPropDuration(save, modKey) {
   const def = GARAGE_MODS.find((m) => m.key === modKey);
   if (!def) return 4.0;
@@ -68,7 +121,7 @@ export function getModPropDuration(save, modKey) {
   return +(def.baseDur + lv * def.stepDur).toFixed(1);
 }
 
-// High-Clarity Low-Frequency Special Track Props
+// Rich In-Run Track Props (11 distinct offensive/utility props + Shield + Boba!)
 export const WORLD_PROP_POOL = [
   { id: 'super_magnet', sprite: 'prop_magnet', badge: '🧲磁铁爪', halo: '#f43f5e', toast: '🧲 磁铁爪激活 · 全屏吸豆!' },
   { id: 'dash_rocket', sprite: 'prop_rocket', badge: '🚀氮气罐', halo: '#38bdf8', toast: '🚀 氮气罐喷射 · 极速冲刺!' },
@@ -76,7 +129,11 @@ export const WORLD_PROP_POOL = [
   { id: 'mortar_cat', sprite: 'prop_mortar_cat', badge: '🐱迫击猫', halo: '#fb923c', toast: '🐱 迫击猫助阵 · 自动轰炸!' },
   { id: 'gatling', sprite: 'prop_gatling', badge: '🏀加特林', halo: '#0ea5e9', toast: '🏀 平A切换：六管篮球加特林!' },
   { id: 'bazooka', sprite: 'prop_bazooka', badge: '🦈火箭筒', halo: '#22c55e', toast: '🦈 平A切换：深海鲨鱼火箭筒!' },
-  { id: 'giant_spicy', sprite: 'prop_giant', badge: '🌶️巨人化', halo: '#fde047', toast: '🌶️ 卫龙辣条 · 短暂巨人化!' }
+  { id: 'giant_spicy', sprite: 'prop_giant', badge: '🌶️巨人化', halo: '#fde047', toast: '🌶️ 卫龙辣条 · 短暂巨人化!' },
+  { id: 'midas_gold', sprite: 'prop_midas', badge: '🪙点豆成金', halo: '#facc15', toast: '🪙 点豆成金 · 绿豆三倍暴富!' },
+  { id: 'maodie_pack', sprite: 'prop_maodie', badge: '🐱耄耋群袭', halo: '#fb923c', toast: '🐱 召唤圆头耄耋大军出击!' },
+  { id: 'thunder_drum', sprite: 'prop_lightning', badge: '⚡雷电护体', halo: '#38bdf8', toast: '⚡ 雷电护体 · 自动电击清场!' },
+  { id: 'sky_wings', sprite: 'prop_wings', badge: '🪽滑翔飞翼', halo: '#7dd3fc', toast: '🪽 飞天滑翔翼 · 轻盈五连跳!' }
 ];
 
 // Scarce Gradual-Regen Healing Boba (~18~20% MaxHP smooth HoT, scarce so HP tension matters!)
@@ -150,4 +207,4 @@ export const BOSS_ROSTER = [
   }
 ];
 
-export const MEME_CRIES = ['鸡你太美!', '曼波~', '哈基米!', '芜湖!', '泰裤辣!', '叮咚鸡!'];
+export const MEME_CRIES = ['鸡你太美!', '曼波~', '哈基米!', '我才是奶龙!', '叮咚鸡!', '大狗嚼!'];

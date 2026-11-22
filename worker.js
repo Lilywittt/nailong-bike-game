@@ -1,21 +1,32 @@
-// Hardened Full-Stack Cloudflare Worker for 《鹈鹕测试大乱斗》 (Pelican Test Brawl)
-// Security: PBKDF2-SHA256 (100k iter), CF-Connecting-IP Sliding Quotas (max 3 regs/day, 45s cooldown),
-// Login Brute-Force Lockout (6 fails/10m), Signed Timing Ticket + Honeypot, 4KB Body Cap & Schema Whitelist.
+// Hardened Full-Stack Cloudflare Worker for 《鹈鹕测试大乱斗》 (Pelican Test Brawl v6.2)
+// Security: PBKDF2-SHA256 (100k iter), CF-Connecting-IP Sliding Quotas, Brute-Force Lockout,
+// Signed Timing Ticket + Honeypot, 4KB Body Cap, Schema Whitelist & HMAC-Signed 3-Way Conservation Merge.
+
+const VALID_HERO_LIST = ['nailong', 'ikun', 'pelican', 'naiwa', 'hakimi'];
+const VALID_HEROES = new Set(VALID_HERO_LIST);
+const VALID_MOD_LIST = ['claw', 'nitro', 'sawBumper', 'mortarCat'];
+const VALID_TALENTS = { superCharge: 5, maxHpPct: 5, autoRegen: 5 };
+
+const HERO_CUM_COSTS = { 1: 0, 2: 1000, 3: 2800, 4: 5600, 5: 9800, 6: 15800 };
+const HERO_STEP_COSTS = { 1: 1000, 2: 1800, 3: 2800, 4: 4200, 5: 6000 };
+const MOD_CUM_COSTS = { 0: 0, 1: 500, 2: 1600, 3: 3600 };
+const MOD_STEP_COSTS = { 0: 500, 1: 1100, 2: 2000 };
+const TALENT_STEP_COSTS = { superCharge: 1000, maxHpPct: 10000, autoRegen: 20000 };
 
 const DEFAULT_SAVE = {
-  beans: 150,
+  beans: 2000,
   dashEnergy: 0,
   bestDist: 0,
   bestSingleRun: 0,
   maxCheckpoint: 0,
   selectedCheckpoint: 0,
   selectedHero: 'nailong',
-  unlocked: ['ikun', 'pelican', 'naiwa', 'nailong', 'hakimi'],
+  unlocked: [...VALID_HERO_LIST],
   mods: { claw: 0, nitro: 0, sawBumper: 0, mortarCat: 0 },
-  heroLv: { nailong: 1, ikun: 1, pelican: 1, naiwa: 1, hakimi: 1 }
+  heroLv: { nailong: 1, ikun: 1, pelican: 1, naiwa: 1, hakimi: 1 },
+  talents: { superCharge: 0, maxHpPct: 0, autoRegen: 0 }
 };
 
-const VALID_HEROES = new Set(['nailong', 'ikun', 'pelican', 'naiwa', 'hakimi']);
 const PEPPER = 'pelican_brawl_edge_shield_v2_9f8a7c6e';
 
 function jsonResp(data, status = 200) {
@@ -42,6 +53,13 @@ async function sha256Hex(str) {
   const buf = new TextEncoder().encode(str);
   const digest = await crypto.subtle.digest('SHA-256', buf);
   return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function hmacSha256Hex(keyStr, msgStr) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', enc.encode(keyStr), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(msgStr));
+  return Array.from(new Uint8Array(sig), b => b.toString(16).padStart(2, '0')).join('');
 }
 
 async function hashPasswordPBKDF2(password, saltHex) {
@@ -88,7 +106,7 @@ async function verifyTicket(ticket, ipHash, nowMs) {
   const ts = Number(tsStr);
   if (!Number.isFinite(ts)) return false;
   const age = nowMs - ts;
-  if (age < 800 || age > 900000) return false; // Must be 0.8s..15m old (blocks instant bot scripts!)
+  if (age < 800 || age > 900000) return false;
   const expected = (await sha256Hex(`${PEPPER}:ticket:${ipHash}:${ts}`)).slice(0, 32);
   return timingSafeEq(sig, expected);
 }
@@ -100,6 +118,18 @@ async function readSafeJson(request, maxBytes = 4096) {
   try { text = await request.text(); } catch (_) { return { err: '读取失败', status: 400 }; }
   if (text.length > maxBytes) return { err: '请求数据过大', status: 413 };
   try { return { body: JSON.parse(text) }; } catch (_) { return { err: '请求格式错误', status: 400 }; }
+}
+
+function extractSaveRev(rawParsed) {
+  if (rawParsed && typeof rawParsed === 'object') {
+    const r = Math.floor(Number(rawParsed._rev) || 1);
+    return Math.max(1, r);
+  }
+  return 1;
+}
+
+function serializeSaveWithRev(cleanSave, rev) {
+  return JSON.stringify({ ...cleanSave, _rev: Math.max(1, Math.floor(Number(rev) || 1)) });
 }
 
 function sanitizeSave(raw, prev = null) {
@@ -116,9 +146,9 @@ function sanitizeSave(raw, prev = null) {
       Math.floor(bestDist / 500) * 500
     )
   );
-  const beansVal = s.beans !== undefined
+  const beansVal = s.beans !== undefined && s.beans !== null
     ? Math.min(999999999, Math.max(0, Math.floor(Number(s.beans) || 0)))
-    : Math.min(999999999, Math.max(260, Math.floor(Number(p.beans) || 260)));
+    : Math.min(999999999, Math.max(2000, Math.floor(Number(p.beans) || 2000)));
 
   const unlockedSet = new Set(DEFAULT_SAVE.unlocked);
   for (const arr of [p.unlocked, s.unlocked]) {
@@ -129,19 +159,25 @@ function sanitizeSave(raw, prev = null) {
   const sm = (s.mods && typeof s.mods === 'object') ? s.mods : {};
   const pm = (p.mods && typeof p.mods === 'object') ? p.mods : {};
   const mods = {};
-  for (const k of ['claw', 'nitro', 'sawBumper', 'mortarCat']) {
+  for (const k of VALID_MOD_LIST) {
     mods[k] = Math.min(3, Math.max(0, Math.floor(Number(sm[k]) || 0), Math.floor(Number(pm[k]) || 0)));
   }
   const shl = (s.heroLv && typeof s.heroLv === 'object') ? s.heroLv : {};
   const phl = (p.heroLv && typeof p.heroLv === 'object') ? p.heroLv : {};
   const heroLv = {};
-  for (const h of ['nailong', 'ikun', 'pelican', 'naiwa', 'hakimi']) {
+  for (const h of VALID_HERO_LIST) {
     heroLv[h] = Math.min(6, Math.max(1, Math.floor(Number(shl[h]) || 1), Math.floor(Number(phl[h]) || 1)));
+  }
+  const stl = (s.talents && typeof s.talents === 'object') ? s.talents : {};
+  const ptl = (p.talents && typeof p.talents === 'object') ? p.talents : {};
+  const talents = {};
+  for (const [tk, tmax] of Object.entries(VALID_TALENTS)) {
+    talents[tk] = Math.min(tmax, Math.max(0, Math.floor(Number(stl[tk]) || 0), Math.floor(Number(ptl[tk]) || 0)));
   }
   const selCp = Math.min(maxCheckpoint, Math.max(0, Math.floor(Number(s.selectedCheckpoint ?? p.selectedCheckpoint) || 0)));
   const candHero = typeof s.selectedHero === 'string' ? s.selectedHero : p.selectedHero;
   const hero = VALID_HEROES.has(candHero) ? candHero : 'nailong';
-  const dashEnergy = s.dashEnergy !== undefined
+  const dashEnergy = s.dashEnergy !== undefined && s.dashEnergy !== null
     ? Math.min(30, Math.max(0, Math.round((Number(s.dashEnergy) || 0) * 10) / 10))
     : Math.min(30, Math.max(0, Math.round((Number(p.dashEnergy) || 0) * 10) / 10));
 
@@ -155,8 +191,212 @@ function sanitizeSave(raw, prev = null) {
     selectedHero: hero,
     unlocked: Array.from(unlockedSet),
     mods,
-    heroLv
+    heroLv,
+    talents
   };
+}
+
+function canonicalSaveStr(sv) {
+  const s = sanitizeSave(sv, null);
+  const hl = s.heroLv;
+  const md = s.mods;
+  const tl = s.talents;
+  return `beans=${s.beans}|dash=${Number(s.dashEnergy).toFixed(1)}|bd=${s.bestDist}|bs=${s.bestSingleRun}`
+    + `|mcp=${s.maxCheckpoint}|scp=${s.selectedCheckpoint}|hero=${s.selectedHero}`
+    + `|hl=${hl.nailong},${hl.ikun},${hl.pelican},${hl.naiwa},${hl.hakimi}`
+    + `|md=${md.claw},${md.nitro},${md.sawBumper},${md.mortarCat}`
+    + `|tl=${tl.superCharge},${tl.maxHpPct},${tl.autoRegen}`;
+}
+
+async function makeSyncSig(username, rev, issuedMs, sv) {
+  const normU = String(username || '').trim().toLowerCase();
+  const msg = `${PEPPER}:sync:${normU}:${Math.floor(rev)}:${Math.floor(issuedMs)}:${canonicalSaveStr(sv)}`;
+  return hmacSha256Hex(PEPPER, msg);
+}
+
+function calcPermCost(sv) {
+  let total = 0;
+  const hl = sv.heroLv || {};
+  for (const h of VALID_HERO_LIST) {
+    const lv = Math.min(6, Math.max(1, Math.floor(Number(hl[h]) || 1)));
+    total += HERO_CUM_COSTS[lv];
+  }
+  const md = sv.mods || {};
+  for (const k of VALID_MOD_LIST) {
+    const lv = Math.min(3, Math.max(0, Math.floor(Number(md[k]) || 0)));
+    total += MOD_CUM_COSTS[lv];
+  }
+  const tl = sv.talents || {};
+  for (const [tk, tmax] of Object.entries(VALID_TALENTS)) {
+    const lv = Math.min(tmax, Math.max(0, Math.floor(Number(tl[tk]) || 0)));
+    total += lv * TALENT_STEP_COSTS[tk];
+  }
+  return total;
+}
+
+async function reconcileSaveSubmission(serverSave, serverRev, body, username, nowMs) {
+  const srv = sanitizeSave(serverSave, null);
+  const clientRaw = sanitizeSave(body && body.save, null);
+
+  const baseRev = body && body.baseRev;
+  const baseMs = body && body.baseIssuedAt;
+  const baseSig = body && body.baseSig;
+  const rawBase = body && body.baseSave;
+
+  let sigValid = false;
+  let baseSave = null;
+  if (
+    Number.isInteger(baseRev)
+    && Number.isInteger(baseMs)
+    && typeof baseSig === 'string'
+    && rawBase && typeof rawBase === 'object'
+    && baseRev >= 1 && baseRev <= serverRev
+    && baseMs >= 1 && baseMs <= nowMs + 60000
+  ) {
+    baseSave = sanitizeSave(rawBase, null);
+    const expectedSig = await makeSyncSig(username, baseRev, baseMs, baseSave);
+    sigValid = timingSafeEq(baseSig, expectedSig);
+  }
+
+  if (!sigValid) {
+    return { mergedSave: srv, nextRev: serverRev, conflictResolved: true, needsRebase: true };
+  }
+
+  let isConflict = baseRev < serverRev || canonicalSaveStr(baseSave) !== canonicalSaveStr(srv);
+  const clientEff = sanitizeSave(clientRaw, baseSave);
+
+  const dDash = Math.round((clientRaw.dashEnergy - baseSave.dashEnergy) * 10) / 10;
+  const paidDash = Math.round(Math.max(0, dDash) * 1000);
+  const paidPerm = Math.max(0, calcPermCost(clientEff) - calcPermCost(baseSave));
+  let pureBeanDelta = (clientRaw.beans - baseSave.beans) + paidPerm + paidDash;
+
+  const elapsedSec = Math.max(1.0, (nowMs - baseMs) / 1000.0);
+  const maxEarn = Math.min(60000, Math.floor(1500 + elapsedSec * 180));
+  if (pureBeanDelta > maxEarn) {
+    pureBeanDelta = maxEarn;
+    isConflict = true;
+  }
+
+  let avail = srv.beans + pureBeanDelta;
+  let doubleSpentConsumable = false;
+  let mergedDash = srv.dashEnergy;
+
+  if (dDash > 0) {
+    const roomSec = Math.round(Math.max(0, 30.0 - srv.dashEnergy) * 10) / 10;
+    const wantSec = Math.min(dDash, roomSec);
+    const costWant = Math.round(wantSec * 1000);
+    if (avail >= costWant) {
+      mergedDash = Math.round((srv.dashEnergy + wantSec) * 10) / 10;
+      avail -= costWant;
+      if (wantSec < dDash) isConflict = true;
+    } else {
+      const affordablePacks = Math.max(0, Math.floor(avail / 10000));
+      const grantSec = Math.min(roomSec, affordablePacks * 10.0);
+      mergedDash = Math.round((srv.dashEnergy + grantSec) * 10) / 10;
+      avail -= Math.round(grantSec * 1000);
+      isConflict = true;
+    }
+  } else {
+    const rawDash = Math.round((srv.dashEnergy + dDash) * 10) / 10;
+    if (rawDash >= 0) {
+      mergedDash = rawDash;
+    } else {
+      mergedDash = 0;
+      const deficitCost = Math.round((-rawDash) * 1000);
+      isConflict = true;
+      if (avail >= deficitCost) {
+        avail -= deficitCost;
+      } else {
+        doubleSpentConsumable = true;
+        avail = Math.max(0, srv.beans + Math.min(0, pureBeanDelta) - deficitCost);
+      }
+    }
+  }
+
+  if (avail < 0) {
+    doubleSpentConsumable = true;
+    avail = 0;
+    isConflict = true;
+  }
+
+  const mergedHl = { ...srv.heroLv };
+  for (const h of VALID_HERO_LIST) {
+    while (mergedHl[h] < clientEff.heroLv[h]) {
+      const stepCost = HERO_STEP_COSTS[mergedHl[h]];
+      if (avail >= stepCost) {
+        avail -= stepCost;
+        mergedHl[h] += 1;
+      } else {
+        isConflict = true;
+        break;
+      }
+    }
+  }
+
+  const mergedMods = { ...srv.mods };
+  for (const k of VALID_MOD_LIST) {
+    while (mergedMods[k] < clientEff.mods[k]) {
+      const stepCost = MOD_STEP_COSTS[mergedMods[k]];
+      if (avail >= stepCost) {
+        avail -= stepCost;
+        mergedMods[k] += 1;
+      } else {
+        isConflict = true;
+        break;
+      }
+    }
+  }
+
+  const mergedTalents = { ...srv.talents };
+  for (const [tk, tmax] of Object.entries(VALID_TALENTS)) {
+    while (mergedTalents[tk] < Math.min(tmax, clientEff.talents[tk])) {
+      const stepCost = TALENT_STEP_COSTS[tk];
+      if (avail >= stepCost) {
+        avail -= stepCost;
+        mergedTalents[tk] += 1;
+      } else {
+        isConflict = true;
+        break;
+      }
+    }
+  }
+
+  const bestDist = doubleSpentConsumable ? srv.bestDist : Math.min(999999, Math.max(srv.bestDist, clientRaw.bestDist));
+  const bestSingleRun = doubleSpentConsumable ? srv.bestSingleRun : Math.min(999999, Math.max(srv.bestSingleRun, clientRaw.bestSingleRun));
+  const maxCheckpoint = doubleSpentConsumable
+    ? srv.maxCheckpoint
+    : Math.min(999500, Math.max(srv.maxCheckpoint, clientRaw.maxCheckpoint, Math.floor(bestDist / 500) * 500));
+
+  const mergedSave = {
+    beans: Math.min(999999999, Math.max(0, Math.floor(avail))),
+    dashEnergy: Math.min(30, Math.max(0, Math.round(mergedDash * 10) / 10)),
+    bestDist,
+    bestSingleRun,
+    maxCheckpoint,
+    selectedCheckpoint: Math.min(maxCheckpoint, Math.max(0, Math.floor(clientRaw.selectedCheckpoint))),
+    selectedHero: VALID_HEROES.has(clientRaw.selectedHero) ? clientRaw.selectedHero : srv.selectedHero,
+    unlocked: [...DEFAULT_SAVE.unlocked],
+    mods: mergedMods,
+    heroLv: mergedHl,
+    talents: mergedTalents
+  };
+  return { mergedSave, nextRev: serverRev + 1, conflictResolved: isConflict, needsRebase: false };
+}
+
+async function buildSignedAuthPayload(usernameDisplay, cleanSave, rev, nowMs, token = '', conflictResolved = false, needsRebase = false) {
+  const payload = {
+    ok: true,
+    username: usernameDisplay,
+    save: cleanSave,
+    rev: Math.floor(rev),
+    issuedAtMs: Math.floor(nowMs),
+    syncSig: await makeSyncSig(usernameDisplay, rev, nowMs, cleanSave),
+    updatedAt: Math.floor(nowMs),
+    conflictResolved: Boolean(conflictResolved),
+    needsRebase: Boolean(needsRebase)
+  };
+  if (token) payload.token = token;
+  return payload;
 }
 
 function extractToken(request, body) {
@@ -197,12 +437,14 @@ async function ensureLeaderboardTable(env) {
   await env.DB.prepare(
     'CREATE TABLE IF NOT EXISTS leaderboard (player_key TEXT PRIMARY KEY, nickname TEXT NOT NULL, hero TEXT NOT NULL, best_single INTEGER NOT NULL, updated_at INTEGER NOT NULL)'
   ).run();
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_lb_score ON leaderboard(best_single DESC)').run();
 }
 
 async function upsertLeaderboardEntry(env, playerKey, nickname, hero, bestSingle, nowMs) {
-  const sc = Math.min(25000, Math.max(0, Math.floor(Number(bestSingle) || 0)));
-  if (!playerKey || sc < 5) return;
-  const safeHero = VALID_HEROES.has(hero) ? hero : 'nailong';
+  const cleanScore = Math.min(25000, Math.max(0, Math.floor(Number(bestSingle) || 0)));
+  if (!playerKey || cleanScore < 5) return;
+  const cleanNick = String(nickname || '神秘骑手').replace(/[\s<>'"\\/;]/g, '').slice(0, 16) || '神秘骑手';
+  const cleanHero = VALID_HEROES.has(hero) ? hero : 'nailong';
   await ensureLeaderboardTable(env);
   await env.DB.prepare(
     `INSERT INTO leaderboard (player_key, nickname, hero, best_single, updated_at)
@@ -212,7 +454,7 @@ async function upsertLeaderboardEntry(env, playerKey, nickname, hero, bestSingle
        hero = excluded.hero,
        best_single = MAX(leaderboard.best_single, excluded.best_single),
        updated_at = CASE WHEN excluded.best_single >= leaderboard.best_single THEN excluded.updated_at ELSE leaderboard.updated_at END`
-  ).bind(playerKey, nickname, safeHero, sc, nowMs).run();
+  ).bind(playerKey, cleanNick, cleanHero, cleanScore, nowMs).run();
 }
 
 export default {
@@ -221,7 +463,10 @@ export default {
     const path = url.pathname;
 
     if (request.method === 'OPTIONS') return jsonResp({ ok: true });
-    if (path === '/api/health') return jsonResp({ ok: true, game: '鹈鹕测试大乱斗', d1: Boolean(env.DB), shield: true });
+
+    if (path === '/api/health') {
+      return jsonResp({ ok: true, game: '鹈鹕测试大乱斗', cloudD1: true, shield: true, conflictEngine: 'v6.2' });
+    }
 
     if (path === '/api/auth/ticket' && request.method === 'GET') {
       const ipHash = await getClientIpHash(request);
@@ -230,15 +475,10 @@ export default {
     }
 
     if (path === '/api/auth/register' && request.method === 'POST') {
-      const origin = request.headers.get('Origin') || '';
-      if (origin && !origin.includes(url.host) && !origin.includes('127.0.0.1') && !origin.includes('localhost')) {
-        return jsonResp({ ok: false, error: '非法来源请求' }, 403);
-      }
       const parsed = await readSafeJson(request, 4096);
       if (parsed.err) return jsonResp({ ok: false, error: parsed.err }, parsed.status);
       const body = parsed.body;
 
-      // Honeypot trap
       if (body.hp_trap) return jsonResp({ ok: false, error: '请求被拒绝' }, 403);
 
       const now = Date.now();
@@ -275,11 +515,12 @@ export default {
       const passHash = await hashPasswordPBKDF2(pwd, salt);
       const token = randomHex(24);
       const cleanSave = sanitizeSave(body.save, null);
+      cleanSave.beans = Math.min(30000, cleanSave.beans);
 
       try {
         await env.DB.prepare(
           'INSERT INTO players (username, display_name, salt, pass_hash, token, save_json, live_run_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)'
-        ).bind(normUser, rawName, salt, passHash, token, JSON.stringify(cleanSave), now, now).run();
+        ).bind(normUser, rawName, salt, passHash, token, serializeSaveWithRev(cleanSave, 1), now, now).run();
       } catch (_) {
         return jsonResp({ ok: false, error: '该账号已被注册，请换个账号或直接登录！' }, 409);
       }
@@ -289,7 +530,7 @@ export default {
       ).bind(guard.reg_day, guard.reg_day_count + 1, guard.reg_total_count + 1, now, ipHash).run();
 
       await upsertLeaderboardEntry(env, `u:${normUser}`, rawName, cleanSave.selectedHero, cleanSave.bestSingleRun, now);
-      return jsonResp({ ok: true, username: rawName, token, save: cleanSave, updatedAt: now });
+      return jsonResp(await buildSignedAuthPayload(rawName, cleanSave, 1, now, token));
     }
 
     if (path === '/api/auth/login' && request.method === 'POST') {
@@ -318,7 +559,6 @@ export default {
         return jsonResp({ ok: false, error: !row ? '账号不存在，请核对账号或点击注册' : '密码错误，请重试' }, !row ? 404 : 401);
       }
 
-      // Reset fail counter & upgrade legacy hash if needed
       let nextPassHash = row.pass_hash;
       if (!nextPassHash.startsWith('pbkdf2$')) {
         nextPassHash = await hashPasswordPBKDF2(pwd, row.salt);
@@ -328,14 +568,18 @@ export default {
         await env.DB.prepare('UPDATE ip_limits SET fail_count = 0 WHERE ip_hash = ?').bind(ipHash).run();
       }
 
-      let cloudSave = DEFAULT_SAVE;
-      try { cloudSave = sanitizeSave(JSON.parse(row.save_json), null); } catch (_) {}
+      let rawParsed = null;
+      try { rawParsed = JSON.parse(row.save_json); } catch (_) {}
+      const rev = extractSaveRev(rawParsed);
+      const cloudSave = sanitizeSave(rawParsed, null);
 
       const token = row.token || randomHex(24);
       if (!row.token) {
         await env.DB.prepare('UPDATE players SET token = ? WHERE username = ?').bind(token, normUser).run();
       }
-      return jsonResp({ ok: true, username: row.display_name, token, save: cloudSave, updatedAt: row.updated_at });
+      const payload = await buildSignedAuthPayload(row.display_name, cloudSave, rev, now, token);
+      payload.updatedAt = row.updated_at || now;
+      return jsonResp(payload);
     }
 
     if (path === '/api/auth/me' && request.method === 'GET') {
@@ -343,9 +587,14 @@ export default {
       if (!token) return jsonResp({ ok: false, error: '未登录' }, 401);
       const row = await env.DB.prepare('SELECT display_name, save_json, updated_at FROM players WHERE token = ?').bind(token).first();
       if (!row) return jsonResp({ ok: false, error: '登录已失效' }, 401);
-      let cloudSave = DEFAULT_SAVE;
-      try { cloudSave = sanitizeSave(JSON.parse(row.save_json), null); } catch (_) {}
-      return jsonResp({ ok: true, username: row.display_name, save: cloudSave, updatedAt: row.updated_at });
+      const now = Date.now();
+      let rawParsed = null;
+      try { rawParsed = JSON.parse(row.save_json); } catch (_) {}
+      const rev = extractSaveRev(rawParsed);
+      const cloudSave = sanitizeSave(rawParsed, null);
+      const payload = await buildSignedAuthPayload(row.display_name, cloudSave, rev, now);
+      payload.updatedAt = row.updated_at || now;
+      return jsonResp(payload);
     }
 
     if (path === '/api/save' && request.method === 'POST') {
@@ -366,19 +615,27 @@ export default {
 
       const row = await env.DB.prepare('SELECT username, display_name, save_json FROM players WHERE token = ?').bind(token).first();
       if (!row) return jsonResp({ ok: false, error: '登录已失效' }, 401);
-      let prevSave = null;
-      try { prevSave = JSON.parse(row.save_json); } catch (_) {}
-      const mergedSave = sanitizeSave(body.save, prevSave);
-      await env.DB.prepare('UPDATE players SET save_json = ?, live_run_json = NULL, updated_at = ? WHERE username = ?')
-        .bind(JSON.stringify(mergedSave), now, row.username).run();
-      await upsertLeaderboardEntry(env, `u:${row.username}`, row.display_name, mergedSave.selectedHero, mergedSave.bestSingleRun, now);
-      return jsonResp({ ok: true, username: row.display_name, save: mergedSave, updatedAt: now });
+
+      let prevRaw = null;
+      try { prevRaw = JSON.parse(row.save_json); } catch (_) {}
+      const prevRev = extractSaveRev(prevRaw);
+      const prevSave = sanitizeSave(prevRaw, null);
+
+      const { mergedSave, nextRev, conflictResolved, needsRebase } = await reconcileSaveSubmission(
+        prevSave, prevRev, body, row.display_name, now
+      );
+
+      if (!needsRebase) {
+        await env.DB.prepare('UPDATE players SET save_json = ?, live_run_json = NULL, updated_at = ? WHERE username = ?')
+          .bind(serializeSaveWithRev(mergedSave, nextRev), now, row.username).run();
+        await upsertLeaderboardEntry(env, `u:${row.username}`, row.display_name, mergedSave.selectedHero, mergedSave.bestSingleRun, now);
+      }
+      return jsonResp(await buildSignedAuthPayload(row.display_name, mergedSave, nextRev, now, '', conflictResolved, needsRebase));
     }
 
     if (path === '/api/leaderboard' && request.method === 'GET') {
       await ensureLeaderboardTable(env);
       const myKey = String(url.searchParams.get('key') || '').trim().slice(0, 64);
-      // Backfill existing D1 players once if leaderboard is sparse
       const pRes = await env.DB.prepare('SELECT username, display_name, save_json, updated_at FROM players ORDER BY updated_at DESC LIMIT 60').all();
       for (const pr of (pRes.results || [])) {
         try {
