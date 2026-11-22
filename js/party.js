@@ -8,17 +8,17 @@
 //  5. Non-Lethal 1.3s Pelican Rescue Respawn & Server-Adjudicated Finish Podium
 // ============================================================================
 
-import { HEROES } from './config.js?v=6.9';
+import { HEROES } from './config.js?v=7.0';
 import {
   drawModelOn,
   drawSpaldingWheelOn,
   drawSculptedBikeAndHero
-} from './models.js?v=6.9';
+} from './models.js?v=7.0';
 import {
   ensureAudio,
   playVoiceSlice,
   playSfx
-} from './audio.js?v=6.9';
+} from './audio.js?v=7.0';
 
 const PARTY_PID_KEY = 'pelican_party_pid_v1';
 const PARTY_TAB_SID_KEY = 'pelican_party_tabsid_v1';
@@ -219,6 +219,7 @@ export function createPartyController(bridge) {
   const partyLobbyWaitView = document.getElementById('partyLobbyWaitView');
   const partyQuickMatchBtn = document.getElementById('partyQuickMatchBtn');
   const partyInstantBotBtn = document.getElementById('partyInstantBotBtn');
+  const partyCreateCodeInp = document.getElementById('partyCreateCodeInp');
   const partyCreateRoomBtn = document.getElementById('partyCreateRoomBtn');
   const partyJoinCodeInp = document.getElementById('partyJoinCodeInp');
   const partyJoinRoomBtn = document.getElementById('partyJoinRoomBtn');
@@ -227,12 +228,14 @@ export function createPartyController(bridge) {
   const partyCopyCodeBtn = document.getElementById('partyCopyCodeBtn');
   const partyWaitMeIco = document.getElementById('partyWaitMeIco');
   const partyWaitMeNm = document.getElementById('partyWaitMeNm');
+  const partyWaitMeSt = document.getElementById('partyWaitMeSt');
   const partyWaitRivalCard = document.getElementById('partyWaitRivalCard');
   const partyWaitRivalIco = document.getElementById('partyWaitRivalIco');
   const partyWaitRivalNm = document.getElementById('partyWaitRivalNm');
   const partyWaitRivalSt = document.getElementById('partyWaitRivalSt');
   const partyPlanStrip = document.getElementById('partyPlanStrip');
   const partyWaitStatusMsg = document.getElementById('partyWaitStatusMsg');
+  const partyReadyBtn = document.getElementById('partyReadyBtn');
   const partyWaitAddBotBtn = document.getElementById('partyWaitAddBotBtn');
   const partyLeaveRoomBtn = document.getElementById('partyLeaveRoomBtn');
 
@@ -1728,34 +1731,71 @@ export function createPartyController(bridge) {
     updateServerClockOffset(Number(data.serverNowMs));
     party.roomCode = data.roomCode;
     party.status = data.status;
-    party.raceDist = Number(data.raceDist) || 2000;
+    party.raceDist = Number(data.raceDist) || 3500;
     party.trackSeed = Number(data.trackSeed) || 123456;
     party.modulePlan = Array.isArray(data.modulePlan) ? data.modulePlan : [];
     party.startAtMs = Number(data.startAtMs) || 0;
     party.rival = data.rival || null;
+    party.myReady = Boolean(data.you && data.you.ready);
 
     if (partyWaitCodeTxt) partyWaitCodeTxt.textContent = party.roomCode;
     if (data.you) {
       if (partyWaitMeIco) partyWaitMeIco.textContent = getHeroIcon(data.you.heroId);
       if (partyWaitMeNm) partyWaitMeNm.textContent = `${data.you.nickname} (你)`;
+      if (partyWaitMeSt) {
+        partyWaitMeSt.textContent = party.myReady ? '✅ 已准备' : '⏳ 未准备';
+        partyWaitMeSt.className = `prc-st ${party.myReady ? 'ready-on' : 'ready-wait'}`;
+      }
     }
+
+    const rivalReady = Boolean(data.rival && data.rival.ready);
+    const readyCount = (party.myReady ? 1 : 0) + (rivalReady ? 1 : 0);
+
     if (data.rival) {
       if (partyWaitRivalCard) partyWaitRivalCard.classList.add('ready');
       if (partyWaitRivalIco) partyWaitRivalIco.textContent = getHeroIcon(data.rival.heroId);
       if (partyWaitRivalNm) partyWaitRivalNm.textContent = data.rival.nickname;
-      if (partyWaitRivalSt) partyWaitRivalSt.textContent = '🔥 劲敌就位 · 即将发车！';
+      if (partyWaitRivalSt) {
+        partyWaitRivalSt.textContent = rivalReady ? '✅ 对手已准备' : '⏳ 选角准备中...';
+        partyWaitRivalSt.className = `prc-st ${rivalReady ? 'ready-on' : 'ready-wait'}`;
+      }
       if (partyWaitAddBotBtn) partyWaitAddBotBtn.classList.add('hidden-block');
-      if (partyWaitStatusMsg) partyWaitStatusMsg.textContent = '🚦 双人已集结！正在进入同道竞速赛场...';
+      if (partyReadyBtn) {
+        partyReadyBtn.classList.toggle('is-ready', party.myReady);
+        if (party.myReady) {
+          partyReadyBtn.textContent = `✅ 已准备 (${readyCount}/2) · 点击可取消`;
+        } else if (rivalReady) {
+          partyReadyBtn.textContent = `🔥 对手已准备！点击准备发车 (1/2)`;
+        } else {
+          partyReadyBtn.textContent = `✋ 点击准备 (${readyCount}/2)`;
+        }
+      }
+      if (partyWaitStatusMsg) {
+        partyWaitStatusMsg.textContent = party.myReady
+          ? '⏳ 你已准备就绪，等待对手点击【准备】后立即发车！'
+          : (rivalReady
+            ? '🔥 对手已准备就绪！上方可换角色，点击【准备】立即发车！'
+            : '🎉 对手已进房！双方都点击下方【准备】后开始 3..2..1 发车！');
+      }
     } else {
       if (partyWaitRivalCard) partyWaitRivalCard.classList.remove('ready');
       if (partyWaitRivalIco) partyWaitRivalIco.textContent = '⏳';
       if (partyWaitRivalNm) partyWaitRivalNm.textContent = '等待劲敌...';
-      if (partyWaitRivalSt) partyWaitRivalSt.textContent = '分享4位房号或秒加AI';
+      if (partyWaitRivalSt) {
+        partyWaitRivalSt.textContent = '分享房号或秒加AI';
+        partyWaitRivalSt.className = 'prc-st';
+      }
       if (partyWaitAddBotBtn) partyWaitAddBotBtn.classList.remove('hidden-block');
+      if (partyReadyBtn) {
+        partyReadyBtn.classList.toggle('is-ready', party.myReady);
+        partyReadyBtn.textContent = party.myReady
+          ? '✅ 已提前准备 (1/2) · 点击可取消'
+          : '✋ 点击准备 (0/2)';
+      }
       if (partyWaitStatusMsg) {
         partyWaitStatusMsg.textContent = data.isQuickmatch
-          ? '⚡ 正在全服匹配真人骑手... 也可点击下方按钮秒加抽象AI劲敌立即开跑！'
-          : '⏳ 等待好友输入 4 位房间号加入，或点击下方添加抽象AI劲敌立即开跑！';
+          ? '⚡ 正在全服匹配真人骑手... 匹配成功后双方点【准备】发车，也可秒加AI立即开跑！'
+          : `⏳ 房间号【${party.roomCode}】已建好！发给好友加入，双方点【准备】后发车！`;
       }
     }
     renderLobbyPlanPreview(party.modulePlan);
@@ -1912,7 +1952,7 @@ export function createPartyController(bridge) {
       if (partyRivalPinLbl) partyRivalPinLbl.textContent = party.rival.nickname.slice(0, 5);
     }
 
-    raceSyncTimer = setInterval(triggerPartySyncNow, 80);
+    raceSyncTimer = setInterval(triggerPartySyncNow, 115);
     triggerPartySyncNow();
   }
 
@@ -2013,11 +2053,11 @@ export function createPartyController(bridge) {
           }
         }
       } else {
-        if (resp.status === 404 || resp.status === 403) {
+        if (resp.status === 404) {
           party.sync404Count = (party.sync404Count || 0) + 1;
-          if (party.sync404Count >= 2 && party.status !== 'finished') {
-            bridge.showToast('⚠️ 房间已结束或连接重置，已安全返回大厅');
-            exitPartyToHub();
+          if (party.sync404Count >= 6 && party.status !== 'finished') {
+            bridge.showToast('⚠️ 房间已结束或连接重置，已返回大厅');
+            resetPartyLocalToHubOnly();
             return;
           }
         }
@@ -2422,16 +2462,16 @@ export function createPartyController(bridge) {
       && fx.truckRammedTimer <= 0
       && party.staminaExhaustCd <= 0;
 
-    if (party.staminaHeld && canHoldSprint && (party.staminaBoosting ? party.stamina > 0.5 : party.stamina >= 12)) {
+    if (party.staminaHeld && canHoldSprint && (party.staminaBoosting ? party.stamina > 0.5 : party.stamina >= 5)) {
       if (!party.staminaBoosting) {
         party.staminaBoosting = true;
         playSfx('hyper');
         if (bridge.triggerPartyHitImpact) bridge.triggerPartyHitImpact(0.45, true);
-        p.vx = Math.max(p.vx, p.baseSpeed * 1.98);
-        w.shockwaves.push({ x: p.x + 10, y: p.y - 44, r: 14, maxR: 220, life: 0.26, color: '#38bdf8', harmless: true });
+        p.vx = Math.max(p.vx, p.baseSpeed * 2.08);
+        w.shockwaves.push({ x: p.x + 10, y: p.y - 44, r: 14, maxR: 235, life: 0.28, color: '#fde047', harmless: true });
       }
-      // Fast Genshin sprint burn (~64%/sec -> ~1.56s full-bar burst!)
-      party.stamina = Math.max(0, party.stamina - 64 * realDt);
+      // Fast Genshin sprint burn (~58%/sec -> ~1.72s full-bar super dash!)
+      party.stamina = Math.max(0, party.stamina - 58 * realDt);
       party.staminaRegenDelay = 0.55;
       party.staminaSparkTick -= realDt;
       if (party.staminaSparkTick <= 0) {
@@ -2480,15 +2520,15 @@ export function createPartyController(bridge) {
     if (partyStaminaFill) partyStaminaFill.style.width = `${party.stamina.toFixed(1)}%`;
     if (partyStaminaBtn) {
       partyStaminaBtn.classList.toggle('boosting', party.staminaBoosting);
-      partyStaminaBtn.classList.toggle('exhausted', party.staminaExhaustCd > 0 || (!party.staminaBoosting && party.stamina < 12));
+      partyStaminaBtn.classList.toggle('exhausted', party.staminaExhaustCd > 0 || (!party.staminaBoosting && party.stamina < 5));
     }
     if (partyStaminaLbl) {
       if (party.staminaExhaustCd > 0) {
         partyStaminaLbl.textContent = `🥵 充能 ${Math.round(party.stamina)}%`;
       } else if (party.staminaBoosting) {
-        partyStaminaLbl.textContent = `⚡ 疾驰 ${Math.round(party.stamina)}%`;
+        partyStaminaLbl.textContent = `☄️ 超级冲刺 ${Math.round(party.stamina)}%`;
       } else {
-        partyStaminaLbl.textContent = `⚡ 按住冲刺 ${Math.round(party.stamina)}%`;
+        partyStaminaLbl.textContent = `☄️ 按住超级冲刺 ${Math.round(party.stamina)}%`;
       }
     }
 
@@ -2989,7 +3029,7 @@ export function createPartyController(bridge) {
     if (fx.kunRocketTimer > 0) return Math.max(2.35, aliveMult * 1.48);
 
     let boostMult = 1.0;
-    if (party.staminaBoosting) boostMult = Math.max(boostMult, 1.72);
+    if (party.staminaBoosting) boostMult = Math.max(boostMult, 1.92);
     if (fx.ddjRushTimer > 0) boostMult = Math.max(boostMult, 1.66);
     if (fx.whipBoostTimer > 0) boostMult = Math.max(boostMult, 1.50);
     if (fx.spicyDashTimer > 0) boostMult = Math.max(boostMult, 1.44);
@@ -4495,8 +4535,20 @@ export function createPartyController(bridge) {
     }
   }
 
+  function cleanPartyRoomCode(raw) {
+    return String(raw || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+  }
+
   async function handleCreateRoom() {
-    const data = await callPartyLobbyApi('/api/party/create');
+    const rawCustom = partyCreateCodeInp ? String(partyCreateCodeInp.value || '').trim() : '';
+    const customCode = cleanPartyRoomCode(rawCustom);
+    if (rawCustom.length > 0 && customCode.length < 2) {
+      bridge.showToast('✏️ 自定义房号需为 2~8 位数字或字母（留空则自动生成）！');
+      if (partyCreateCodeInp) partyCreateCodeInp.focus();
+      return;
+    }
+    const extra = customCode.length >= 2 ? { customCode } : {};
+    const data = await callPartyLobbyApi('/api/party/create', extra);
     if (!data) return;
     playSfx('crate');
     if (partyLobbyEntryView) partyLobbyEntryView.classList.add('hidden-block');
@@ -4520,16 +4572,54 @@ export function createPartyController(bridge) {
   }
 
   async function handleJoinRoom() {
-    const code = partyJoinCodeInp ? String(partyJoinCodeInp.value || '').replace(/\D/g, '').slice(0, 4) : '';
-    if (code.length !== 4) {
-      bridge.showToast('✏️ 请输入 4 位数字房间号！');
+    const code = cleanPartyRoomCode(partyJoinCodeInp ? partyJoinCodeInp.value : '');
+    if (code.length < 2) {
+      bridge.showToast('✏️ 请输入 2~8 位房间号！');
       if (partyJoinCodeInp) partyJoinCodeInp.focus();
       return;
     }
     const data = await callPartyLobbyApi('/api/party/join', { roomCode: code });
     if (!data) return;
     playSfx('crate');
+    if (data.status === 'waiting') {
+      if (partyLobbyEntryView) partyLobbyEntryView.classList.add('hidden-block');
+      if (partyLobbyWaitView) partyLobbyWaitView.classList.remove('hidden-block');
+      applyLobbySnapshot(data);
+      startWaitingRoomPoll();
+    } else {
+      applyLobbySnapshot(data);
+    }
+  }
+
+  async function handleToggleReady() {
+    if (!party.roomCode || party.status !== 'waiting') return;
+    const wantReady = !party.myReady;
+    const data = await callPartyLobbyApi('/api/party/ready', {
+      roomCode: party.roomCode,
+      ready: wantReady
+    });
+    if (!data) return;
+    playSfx('crate');
     applyLobbySnapshot(data);
+  }
+
+  async function openAndQuickMatch() {
+    openLobbyModal();
+    await handleQuickMatch();
+  }
+
+  function resetPartyLocalToHubOnly() {
+    clearPartyTimers();
+    party.active = false;
+    party.roomCode = '';
+    party.status = 'idle';
+    party.myReady = false;
+    party.slots = [null, null];
+    party.ropePullVx = 0;
+    setHudPartyVisibility(false);
+    if (partyPodiumOverlay) partyPodiumOverlay.classList.add('hidden');
+    if (partyLobbyOverlay) partyLobbyOverlay.classList.add('hidden');
+    bridge.returnToHubFromParty();
   }
 
   async function handleInstantBotStart() {
@@ -4614,6 +4704,11 @@ export function createPartyController(bridge) {
     });
   }
   if (partyCreateRoomBtn) partyCreateRoomBtn.addEventListener('click', handleCreateRoom);
+  if (partyCreateCodeInp) {
+    partyCreateCodeInp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleCreateRoom();
+    });
+  }
   if (partyQuickMatchBtn) partyQuickMatchBtn.addEventListener('click', handleQuickMatch);
   if (partyJoinRoomBtn) partyJoinRoomBtn.addEventListener('click', handleJoinRoom);
   if (partyJoinCodeInp) {
@@ -4621,6 +4716,7 @@ export function createPartyController(bridge) {
       if (e.key === 'Enter') handleJoinRoom();
     });
   }
+  if (partyReadyBtn) partyReadyBtn.addEventListener('click', handleToggleReady);
   if (partyInstantBotBtn) partyInstantBotBtn.addEventListener('click', handleInstantBotStart);
   if (partyWaitAddBotBtn) partyWaitAddBotBtn.addEventListener('click', handleWaitRoomAddBot);
   if (partyLeaveRoomBtn) {
@@ -4658,22 +4754,48 @@ export function createPartyController(bridge) {
   }
 
   if (partyStaminaBtn) {
+    partyStaminaBtn.addEventListener('contextmenu', (e) => e.preventDefault());
     const startHold = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (partyStaminaBtn.setPointerCapture && e.pointerId !== undefined) {
+      if (e && e.cancelable) e.preventDefault();
+      if (e) e.stopPropagation();
+      ensureAudio();
+      if (partyStaminaBtn.setPointerCapture && e && e.pointerId !== undefined) {
         try { partyStaminaBtn.setPointerCapture(e.pointerId); } catch (_) {}
       }
       party.staminaHeld = true;
     };
     const stopHold = (e) => {
-      if (e) e.preventDefault();
+      if (e && e.cancelable) e.preventDefault();
       party.staminaHeld = false;
     };
     partyStaminaBtn.addEventListener('pointerdown', startHold);
     partyStaminaBtn.addEventListener('pointerup', stopHold);
     partyStaminaBtn.addEventListener('pointercancel', stopHold);
+    partyStaminaBtn.addEventListener('lostpointercapture', stopHold);
+    partyStaminaBtn.addEventListener('touchstart', startHold, { passive: false });
+    partyStaminaBtn.addEventListener('touchend', stopHold, { passive: false });
+    partyStaminaBtn.addEventListener('touchcancel', stopHold, { passive: false });
+    partyStaminaBtn.addEventListener('mousedown', startHold);
+    window.addEventListener('pointerup', () => { party.staminaHeld = false; });
+    window.addEventListener('mouseup', () => { party.staminaHeld = false; });
+    window.addEventListener('blur', () => { party.staminaHeld = false; });
   }
+
+  // Instant foreground wakeup sync so switching to WeChat to share room code NEVER drops the room!
+  const wakeUpPartySync = () => {
+    if (document.hidden) return;
+    if (party.active && party.roomCode) {
+      triggerPartySyncNow();
+    } else if (party.status === 'waiting' && party.roomCode) {
+      const curHero = bridge.store.save.selectedHero || 'nailong';
+      fetch(`/api/party/room?roomCode=${encodeURIComponent(party.roomCode)}&playerId=${encodeURIComponent(playerId)}&heroId=${encodeURIComponent(curHero)}`)
+        .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+        .then(({ ok, d }) => { if (ok && d && d.ok) applyLobbySnapshot(d); })
+        .catch(() => {});
+    }
+  };
+  window.addEventListener('focus', wakeUpPartySync);
+  document.addEventListener('visibilitychange', wakeUpPartySync);
 
   if (partyRematchBtn) partyRematchBtn.addEventListener('click', handleRematch);
   if (partyPodiumHubBtn) partyPodiumHubBtn.addEventListener('click', exitPartyToHub);
@@ -4734,6 +4856,7 @@ export function createPartyController(bridge) {
     renderScreenEdgeIndicators,
     flushLeaveBeacon,
     exitPartyToHub,
+    openAndQuickMatch,
     getDizzyAngleOffset: () => 0,
     isPureKunRocket: () => party.fx.kunRocketTimer > 0,
     isHighSpeedBoost: () => (

@@ -529,6 +529,16 @@ function partyCleanHero(rawHero) {
   return VALID_HEROES.has(h) ? h : 'nailong';
 }
 
+function partyCleanRoomCode(rawCode) {
+  return String(rawCode || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+}
+
+function hashRoomCodeNum(code) {
+  let acc = 0;
+  for (let i = 0; i < code.length; i++) acc = (acc * 31 + code.charCodeAt(i)) >>> 0;
+  return acc;
+}
+
 async function resolvePartyAccountKey(env, token, fallbackUser) {
   if (token) {
     const row = await env.DB.prepare('SELECT username, display_name FROM players WHERE token = ?').bind(token).first();
@@ -586,6 +596,7 @@ function makePartyPlayerState(playerId, slot, nickname, heroId, nowMs, isBot = f
     accountKey,
     accountName,
     isBot: Boolean(isBot),
+    ready: Boolean(isBot),
     x: 120.0,
     y: 0.0,
     vx: 0.0,
@@ -645,6 +656,7 @@ function publicPartyPlayerView(p, nowMs) {
     nickname: p.nickname,
     heroId: p.heroId,
     isBot: Boolean(p.isBot),
+    ready: Boolean(p.ready || p.isBot),
     x: Math.round(Number(p.x || 120) * 10) / 10,
     y: Math.round(Number(p.y || 0) * 10) / 10,
     vx: Math.round(Number(p.vx || 0) * 10) / 10,
@@ -1147,12 +1159,51 @@ function tickPartyBot(room, botP, humanP, nowMs) {
 
 async function prunePartyRoomsD1(env, nowMs) {
   await ensurePartyRoomsTable(env);
-  await env.DB.prepare('DELETE FROM party_rooms WHERE updated_at < ? OR (status = ? AND updated_at < ?)')
-    .bind(nowMs - PARTY_ROOM_IDLE_TTL_MS, 'waiting', nowMs - 8500).run();
+  await env.DB.prepare(
+    'DELETE FROM party_rooms WHERE updated_at < ? OR (status = ? AND is_quickmatch = 1 AND updated_at < ?) OR (status = ? AND is_quickmatch = 0 AND updated_at < ?)'
+  ).bind(nowMs - PARTY_ROOM_IDLE_TTL_MS, 'waiting', nowMs - 120000, 'waiting', nowMs - 300000).run();
 }
 
-async function createPartyRoomD1(env, playerId, nickname, heroId, raceDist, nowMs, isQuickmatch, accountKey, accountName) {
+async function createPartyRoomD1(env, playerId, nickname, heroId, raceDist, nowMs, isQuickmatch, accountKey, accountName, customCode = '') {
   await prunePartyRoomsD1(env, nowMs);
+  if (customCode) {
+    const existing = await env.DB.prepare('SELECT status, updated_at FROM party_rooms WHERE room_code = ?').bind(customCode).first();
+    if (existing) {
+      if (existing.status === 'finished' && (nowMs - Number(existing.updated_at || 0)) > 15000) {
+        await env.DB.prepare('DELETE FROM party_rooms WHERE room_code = ?').bind(customCode).run();
+      } else {
+        return { errorResp: jsonResp({ ok: false, error: `房号【${customCode}】已被使用，请换一个房号或直接点击“加入”进房！` }, 409) };
+      }
+    }
+    const randArr = new Uint32Array(1);
+    crypto.getRandomValues(randArr);
+    const trackSeed = (randArr[0] % 1900000000) + 100000;
+    const modulePlan = generatePartyModulePlan(trackSeed, raceDist);
+    const p1 = makePartyPlayerState(playerId, 1, nickname, heroId, nowMs, false, accountKey, accountName);
+    const room = {
+      roomCode: customCode,
+      hostId: playerId,
+      status: 'waiting',
+      isQuickmatch: false,
+      raceDist,
+      trackSeed,
+      modulePlan,
+      createdAtMs: nowMs,
+      updatedAtMs: nowMs,
+      startAtMs: null,
+      players: { [playerId]: p1 },
+      processedEventIds: [],
+      trackTraps: [],
+      results: [],
+      rematchVotes: []
+    };
+    const ins = await env.DB.prepare(
+      'INSERT OR IGNORE INTO party_rooms (room_code, status, is_quickmatch, rev, updated_at, state_json) VALUES (?, ?, 0, 1, ?, ?)'
+    ).bind(customCode, 'waiting', nowMs, JSON.stringify(room)).run();
+    if (ins.meta && ins.meta.changes > 0) return { room };
+    return { errorResp: jsonResp({ ok: false, error: `房号【${customCode}】刚刚被抢注，请换一个房号或直接加入！` }, 409) };
+  }
+
   for (let attempt = 0; attempt < 16; attempt++) {
     const randArr = new Uint32Array(2);
     crypto.getRandomValues(randArr);
@@ -1180,18 +1231,23 @@ async function createPartyRoomD1(env, playerId, nickname, heroId, raceDist, nowM
     const res = await env.DB.prepare(
       'INSERT OR IGNORE INTO party_rooms (room_code, status, is_quickmatch, rev, updated_at, state_json) VALUES (?, ?, ?, 1, ?, ?)'
     ).bind(roomCode, 'waiting', isQuickmatch ? 1 : 0, nowMs, JSON.stringify(room)).run();
-    if (res.meta && res.meta.changes > 0) return room;
+    if (res.meta && res.meta.changes > 0) return { room };
   }
   throw new Error('Room allocation busy');
 }
 
 async function mutatePartyRoomCAS(env, roomCode, nowMs, mutatorFn) {
   await ensurePartyRoomsTable(env);
-  for (let attempt = 0; attempt < 6; attempt++) {
+  let lastRoom = null;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 6 * attempt + (nowMs % 5)));
+    }
     const row = await env.DB.prepare('SELECT rev, state_json FROM party_rooms WHERE room_code = ?').bind(roomCode).first();
     if (!row) return { notFound: true };
     const rev = Number(row.rev || 1);
     const room = JSON.parse(row.state_json);
+    lastRoom = room;
     const outcome = mutatorFn(room, nowMs);
     if (outcome && outcome.abortResp) return outcome;
     if (outcome && outcome.deleteRoom) {
@@ -1202,7 +1258,7 @@ async function mutatePartyRoomCAS(env, roomCode, nowMs, mutatorFn) {
       'UPDATE party_rooms SET status = ?, is_quickmatch = ?, rev = ?, updated_at = ?, state_json = ? WHERE room_code = ? AND rev = ?'
     ).bind(
       room.status,
-      room.isQuickmatch && room.status === 'waiting' ? 1 : 0,
+      room.isQuickmatch && room.status === 'waiting' && Object.keys(room.players).length < 2 ? 1 : 0,
       rev + 1,
       nowMs,
       JSON.stringify(room),
@@ -1211,7 +1267,11 @@ async function mutatePartyRoomCAS(env, roomCode, nowMs, mutatorFn) {
     ).run();
     if (upd.meta && upd.meta.changes > 0) return { room, ...outcome };
   }
-  return { conflict: true };
+  const latestRow = await env.DB.prepare('SELECT state_json FROM party_rooms WHERE room_code = ?').bind(roomCode).first();
+  if (latestRow && latestRow.state_json) {
+    try { lastRoom = JSON.parse(latestRow.state_json); } catch (_) {}
+  }
+  return { conflict: true, latestRoom: lastRoom };
 }
 
 async function upsertLeaderboardEntry(env, playerKey, nickname, hero, bestSingle, nowMs) {
@@ -1476,14 +1536,14 @@ export default {
       return jsonResp({ ok: true, playerKey: pkey, nickname: nick, bestSingle: bestNow, myRank: Number(hRow?.cnt || 0) + 1 });
     }
 
-    // ==================== ONLINE MULTIPLAYER PARTY RACE ENDPOINTS (D1 CAS) ====================
+    // ==================== ONLINE MULTIPLAYER PARTY RACE ENDPOINTS (D1 CAS v7.0) ====================
     if (path === '/api/party/room' && request.method === 'GET') {
-      const rcode = String(url.searchParams.get('roomCode') || '').replace(/[^0-9]/g, '').slice(0, 6);
+      const rcode = partyCleanRoomCode(url.searchParams.get('roomCode') || '');
       const pid = partyCleanId(url.searchParams.get('playerId') || '');
       const qsHero = String(url.searchParams.get('heroId') || '').trim();
       const now = Date.now();
       await prunePartyRoomsD1(env, now);
-      if (rcode.length !== 4) return jsonResp({ ok: false, error: '房间不存在或已过期' }, 404);
+      if (rcode.length < 2) return jsonResp({ ok: false, error: '房间不存在或已过期' }, 404);
       const res = await mutatePartyRoomCAS(env, rcode, now, (room, nowMs) => {
         if (room.players[pid]) {
           room.players[pid].lastSyncMs = nowMs;
@@ -1494,7 +1554,7 @@ export default {
         }
         if (room.status === 'finished') {
           for (const [opId, opObj] of Object.entries(room.players)) {
-            if (opId !== pid && !opObj.isBot && (nowMs - Number(opObj.lastSyncMs || nowMs)) > 8500) {
+            if (opId !== pid && !opObj.isBot && (nowMs - Number(opObj.lastSyncMs || nowMs)) > 22000) {
               const del = forfeitPartyPlayer(room, opId, 'disconnect', nowMs);
               if (del) return { deleteRoom: true };
             }
@@ -1502,6 +1562,9 @@ export default {
         }
         return {};
       });
+      if (res.conflict && res.latestRoom) {
+        return jsonResp(buildPartyRoomResponse(res.latestRoom, pid, now, false));
+      }
       if (res.notFound || res.deleteRoom || !res.room) {
         return jsonResp({ ok: false, error: '房间不存在或已过期' }, 404);
       }
@@ -1518,14 +1581,20 @@ export default {
         const pid = partyCleanId(body.playerId);
         const nick = partyCleanNick(body.nickname, '派对房主');
         const hero = partyCleanHero(body.heroId);
+        const rawCustom = String(body.customCode || '').trim();
+        const customCode = partyCleanRoomCode(rawCustom);
+        if (rawCustom.length > 0 && customCode.length < 2) {
+          return jsonResp({ ok: false, error: '自定义房号需为 2~8 位数字或字母！' }, 400);
+        }
         const { accountKey, accountName } = await resolvePartyAccountKey(env, extractToken(request, body), body.authUser || '');
         const raceDist = Math.min(5000, Math.max(1200, Math.floor(Number(body.raceDist) || 3500)));
-        const room = await createPartyRoomD1(env, pid, nick, hero, raceDist, now, false, accountKey, accountName);
-        return jsonResp(buildPartyRoomResponse(room, pid, now, false));
+        const created = await createPartyRoomD1(env, pid, nick, hero, raceDist, now, false, accountKey, accountName, customCode);
+        if (created.errorResp) return created.errorResp;
+        return jsonResp(buildPartyRoomResponse(created.room, pid, now, false));
       }
 
       if (path === '/api/party/set_hero') {
-        const rcode = String(body.roomCode || '').replace(/[^0-9]/g, '').slice(0, 6);
+        const rcode = partyCleanRoomCode(body.roomCode);
         const pid = partyCleanId(body.playerId);
         const hero = partyCleanHero(body.heroId);
         const res = await mutatePartyRoomCAS(env, rcode, now, (room, nowMs) => {
@@ -1539,16 +1608,48 @@ export default {
           return {};
         });
         if (res.abortResp) return res.abortResp;
+        if (res.conflict && res.latestRoom) return jsonResp(buildPartyRoomResponse(res.latestRoom, pid, now, false));
+        if (res.notFound || !res.room) return jsonResp({ ok: false, error: '房间不存在或已过期' }, 404);
+        return jsonResp(buildPartyRoomResponse(res.room, pid, now, false));
+      }
+
+      if (path === '/api/party/ready') {
+        const rcode = partyCleanRoomCode(body.roomCode);
+        const pid = partyCleanId(body.playerId);
+        const wantReady = body.ready !== undefined ? Boolean(body.ready) : true;
+        const res = await mutatePartyRoomCAS(env, rcode, now, (room, nowMs) => {
+          const caller = room.players[pid];
+          if (!caller) return { abortResp: jsonResp({ ok: false, error: '房间不存在或已过期' }, 404) };
+          caller.lastSyncMs = nowMs;
+          room.updatedAtMs = nowMs;
+          if (VALID_HEROES.has(body.heroId) && room.status === 'waiting') caller.heroId = body.heroId;
+          if (body.nickname && room.status === 'waiting') caller.nickname = partyCleanNick(body.nickname, caller.nickname);
+          if (room.status === 'waiting') {
+            caller.ready = wantReady;
+            const plist = Object.values(room.players);
+            if (plist.length >= 2 && plist.every((p) => Boolean(p.ready || p.isBot))) {
+              room.status = 'countdown';
+              room.isQuickmatch = false;
+              room.startAtMs = nowMs + PARTY_COUNTDOWN_MS;
+              for (const pobj of plist) {
+                pobj.lastSyncMs = nowMs;
+              }
+            }
+          }
+          return {};
+        });
+        if (res.abortResp) return res.abortResp;
+        if (res.conflict && res.latestRoom) return jsonResp(buildPartyRoomResponse(res.latestRoom, pid, now, false));
         if (res.notFound || !res.room) return jsonResp({ ok: false, error: '房间不存在或已过期' }, 404);
         return jsonResp(buildPartyRoomResponse(res.room, pid, now, false));
       }
 
       if (path === '/api/party/join') {
-        const rcode = String(body.roomCode || '').replace(/[^0-9]/g, '').slice(0, 6);
+        const rcode = partyCleanRoomCode(body.roomCode);
         const pid = partyCleanId(body.playerId);
         const nick = partyCleanNick(body.nickname, '挑战骑手');
         const hero = partyCleanHero(body.heroId);
-        if (rcode.length !== 4) return jsonResp({ ok: false, error: '请输入正确的 4 位数字房间号！' }, 400);
+        if (rcode.length < 2) return jsonResp({ ok: false, error: '请输入正确的 2~8 位房间号！' }, 400);
         const { accountKey, accountName } = await resolvePartyAccountKey(env, extractToken(request, body), body.authUser || '');
         await prunePartyRoomsD1(env, now);
 
@@ -1567,18 +1668,20 @@ export default {
               abortResp: jsonResp({ ok: false, error: `不能用相同账号【${accountName || nick}】同房互匹！请在另一窗口切换其他账号登录` }, 409)
             };
           }
-          if (Object.keys(room.players).length >= 2) {
-            return { abortResp: jsonResp({ ok: false, error: '该房间已满员 (2/2)，请创建新房间或使用快速匹配！' }, 409) };
+          if (Object.keys(room.players).length >= 2 || room.status !== 'waiting') {
+            return { abortResp: jsonResp({ ok: false, error: '该房间已满员或已发车，请创建新房间或使用快速匹配！' }, 409) };
           }
           room.players[pid] = makePartyPlayerState(pid, 2, nick, hero, nowMs, false, accountKey, accountName);
-          room.status = 'countdown';
+          // Stay in 'waiting' so BOTH players see each other, pick heroes, and click Ready!
           room.isQuickmatch = false;
-          room.startAtMs = nowMs + PARTY_COUNTDOWN_MS;
+          for (const pobj of Object.values(room.players)) {
+            pobj.lastSyncMs = nowMs;
+          }
           room.updatedAtMs = nowMs;
           return {};
         });
         if (res.abortResp) return res.abortResp;
-        if (res.notFound || !res.room) return jsonResp({ ok: false, error: '房间号不存在或已过期，请核对 4 位房间码！' }, 404);
+        if (res.notFound || !res.room) return jsonResp({ ok: false, error: '房间号不存在或已过期，请核对房间号！' }, 404);
         return jsonResp(buildPartyRoomResponse(res.room, pid, now, false));
       }
 
@@ -1627,9 +1730,11 @@ export default {
               return { abortResp: true };
             }
             room.players[pid] = makePartyPlayerState(pid, 2, nick, hero, nowMs, false, accountKey, accountName);
-            room.status = 'countdown';
+            // Enter Ready Room together in 'waiting' so both players click Ready before countdown!
             room.isQuickmatch = false;
-            room.startAtMs = nowMs + PARTY_COUNTDOWN_MS;
+            for (const pobj of Object.values(room.players)) {
+              pobj.lastSyncMs = nowMs;
+            }
             room.updatedAtMs = nowMs;
             return {};
           });
@@ -1640,25 +1745,27 @@ export default {
           }
         }
 
-        const created = await createPartyRoomD1(env, pid, nick, hero, raceDist, now, true, accountKey, accountName);
-        const out = buildPartyRoomResponse(created, pid, now, false);
+        const created = await createPartyRoomD1(env, pid, nick, hero, raceDist, now, true, accountKey, accountName, '');
+        const out = buildPartyRoomResponse(created.room, pid, now, false);
         out.matched = false;
         return jsonResp(out);
       }
 
       if (path === '/api/party/add_bot') {
-        const rcode = String(body.roomCode || '').replace(/[^0-9]/g, '').slice(0, 6);
+        const rcode = partyCleanRoomCode(body.roomCode);
         const pid = partyCleanId(body.playerId);
         const res = await mutatePartyRoomCAS(env, rcode, now, (room, nowMs) => {
           if (!room.players[pid]) return { abortResp: jsonResp({ ok: false, error: '无权操作此房间' }, 403) };
           if (Object.keys(room.players).length >= 2) {
             if (Object.values(room.players).some((p) => p.isBot)) return {};
-            return { abortResp: jsonResp({ ok: false, error: '真人劲敌已就位，马上发车！' }, 409) };
+            return { abortResp: jsonResp({ ok: false, error: '真人劲敌已进房，请点击准备发车！' }, 409) };
           }
           const hostHero = room.players[pid].heroId;
+          room.players[pid].ready = true;
+          room.players[pid].lastSyncMs = nowMs;
           const cands = PARTY_BOT_PERSONAS.filter((bp) => bp[1] !== hostHero);
           const pickPool = cands.length ? cands : PARTY_BOT_PERSONAS;
-          const [botNick, botHero] = pickPool[(Number(rcode) + nowMs) % pickPool.length];
+          const [botNick, botHero] = pickPool[(hashRoomCodeNum(rcode) + nowMs) % pickPool.length];
           const botId = `bot_${rcode}`;
           room.players[botId] = makePartyPlayerState(botId, 2, botNick, botHero, nowMs, true);
           room.status = 'countdown';
@@ -1673,7 +1780,7 @@ export default {
       }
 
       if (path === '/api/party/sync') {
-        const rcode = String(body.roomCode || '').replace(/[^0-9]/g, '').slice(0, 6);
+        const rcode = partyCleanRoomCode(body.roomCode);
         const pid = partyCleanId(body.playerId);
         let builtResp = null;
         const res = await mutatePartyRoomCAS(env, rcode, now, (room, nowMs) => {
@@ -1689,7 +1796,7 @@ export default {
           for (const [opId, opObj] of Object.entries(room.players)) {
             if (opId !== pid) { rival = opObj; break; }
           }
-          if (rival && !rival.isBot && (room.status === 'countdown' || room.status === 'racing') && (nowMs - Number(rival.lastSyncMs || nowMs)) > 8500) {
+          if (rival && !rival.isBot && (room.status === 'countdown' || room.status === 'racing') && (nowMs - Number(rival.lastSyncMs || nowMs)) > 22000) {
             forfeitPartyPlayer(room, rival.playerId, 'disconnect', nowMs);
             rival = null;
           }
@@ -1759,12 +1866,16 @@ export default {
           return {};
         });
         if (res.abortResp) return res.abortResp;
+        // CRITICAL: Never return 404 on D1 CAS write contention — return latest room snapshot cleanly!
+        if (res.conflict && res.latestRoom) {
+          return jsonResp(buildPartyRoomResponse(res.latestRoom, pid, now, false));
+        }
         if (res.notFound || !builtResp) return jsonResp({ ok: false, error: '房间已结束或过期' }, 404);
         return jsonResp(builtResp);
       }
 
       if (path === '/api/party/rematch') {
-        const rcode = String(body.roomCode || '').replace(/[^0-9]/g, '').slice(0, 6);
+        const rcode = partyCleanRoomCode(body.roomCode);
         const pid = partyCleanId(body.playerId);
         const res = await mutatePartyRoomCAS(env, rcode, now, (room, nowMs) => {
           if (!room.players[pid]) return { abortResp: jsonResp({ ok: false, error: '房间已失效，请重新创建房间' }, 404) };
@@ -1791,6 +1902,7 @@ export default {
                 const fresh = makePartyPlayerState(
                   pobj.playerId, pobj.slot, pobj.nickname, pobj.heroId, nowMs, Boolean(pobj.isBot), pobj.accountKey || '', pobj.accountName || ''
                 );
+                fresh.ready = true;
                 Object.assign(pobj, fresh);
               }
               room.status = 'countdown';
@@ -1803,14 +1915,15 @@ export default {
           return {};
         });
         if (res.abortResp) return res.abortResp;
+        if (res.conflict && res.latestRoom) return jsonResp(buildPartyRoomResponse(res.latestRoom, pid, now, false));
         if (res.notFound || !res.room) return jsonResp({ ok: false, error: '房间已失效，请重新创建房间' }, 404);
         return jsonResp(buildPartyRoomResponse(res.room, pid, now, false));
       }
 
       if (path === '/api/party/leave') {
-        const rcode = String(body.roomCode || '').replace(/[^0-9]/g, '').slice(0, 6);
+        const rcode = partyCleanRoomCode(body.roomCode);
         const pid = partyCleanId(body.playerId);
-        if (rcode.length === 4) {
+        if (rcode.length >= 2) {
           await mutatePartyRoomCAS(env, rcode, now, (room, nowMs) => {
             if (!room.players[pid]) return {};
             const shouldDelete = forfeitPartyPlayer(room, pid, 'quit', nowMs);
@@ -1880,7 +1993,7 @@ export default {
 
     if (request.method === 'GET' && STATIC_TEXT_WHITELIST[path]) {
       const entry = STATIC_TEXT_WHITELIST[path];
-      const kvKey = 'txt_v69_' + entry.file.replace(/[^a-zA-Z0-9_.-]/g, '_');
+      const kvKey = 'txt_v70_' + entry.file.replace(/[^a-zA-Z0-9_.-]/g, '_');
       const wantSync = url.searchParams.get('sync') === '1';
       let txt = wantSync ? null : await env.GAME_KV.get(kvKey);
       if (!txt) {

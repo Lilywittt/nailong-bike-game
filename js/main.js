@@ -25,7 +25,7 @@ import {
   getTalentLvFromSave,
   getSuperChargeSpeedMultFromSave,
   getAutoRegenPer5sFromSave
-} from './config.js?v=6.9';
+} from './config.js?v=7.0';
 
 import {
   buildAllSculptedAssets,
@@ -33,7 +33,7 @@ import {
   drawSpaldingWheelOn,
   drawSculptedBikeAndHero,
   getEnemySpriteKey
-} from './models.js?v=6.9';
+} from './models.js?v=7.0';
 
 import {
   ensureAudio,
@@ -48,10 +48,10 @@ import {
   stopBossBgm,
   playSfx,
   tickProceduralBgm
-} from './audio.js?v=6.9';
+} from './audio.js?v=7.0';
 
-import { createCloudStore } from './cloud.js?v=6.9';
-import { createPartyController } from './party.js?v=6.9';
+import { createCloudStore } from './cloud.js?v=7.0';
+import { createPartyController } from './party.js?v=7.0';
 import {
   initBossCustomState,
   clearBossTransientHazards,
@@ -60,7 +60,7 @@ import {
   handlePlayerBossInteraction,
   updateBossEngine,
   renderBossArenaAndModel
-} from './bosses.js?v=6.9';
+} from './bosses.js?v=7.0';
 
 // Zero-allocation in-place array compaction (eliminates 1,400+ GC array allocations/sec!)
 function compactInPlace(arr, keepFn) {
@@ -204,6 +204,15 @@ const talentOverlay = document.getElementById('talentOverlay');
 const talentWalletTxt = document.getElementById('talentWalletTxt');
 const talentCloseBtn = document.getElementById('talentCloseBtn');
 const talentListBox = document.getElementById('talentListBox');
+const propShopHubBar = document.getElementById('propShopHubBar');
+const propShopHubSummary = document.getElementById('propShopHubSummary');
+const propShopOpenBtn = document.getElementById('propShopOpenBtn');
+const propShopOverlay = document.getElementById('propShopOverlay');
+const propShopWalletTxt = document.getElementById('propShopWalletTxt');
+const propShopRechargeBtn = document.getElementById('propShopRechargeBtn');
+const propShopCloseBtn = document.getElementById('propShopCloseBtn');
+const propShopDoneBtn = document.getElementById('propShopDoneBtn');
+const pvpHubQuickMatchBtn = document.getElementById('pvpHubQuickMatchBtn');
 const launchBtn = document.getElementById('launchBtn');
 
 const pauseBtn = document.getElementById('pauseBtn');
@@ -278,13 +287,23 @@ let deathDashActive = false;
 let bankedRunBeans = 0;
 
 let reopenRechargeAfterAuth = false;
+let lastObservedAuthUser = null;
 
 const store = createCloudStore(() => {
+  const curAuthUser = (store.auth && store.auth.username) || '';
+  if (lastObservedAuthUser !== null && lastObservedAuthUser !== curAuthUser) {
+    preSelectedBoost = 0;
+    preSelectedDeathBoost = 0;
+    activeRunHeroId = store.save.selectedHero;
+  }
+  lastObservedAuthUser = curAuthUser;
   refreshAccountButtonsUI();
   if (state === 'HUB') refreshHubUI();
   if (talentOverlay && !talentOverlay.classList.contains('hidden')) refreshTalentModalUI();
+  if (propShopWalletTxt) propShopWalletTxt.textContent = store.save.beans;
   if (typeof refreshRechargeWalletHeader === 'function') refreshRechargeWalletHeader();
 });
+lastObservedAuthUser = (store.auth && store.auth.username) || '';
 store.pullSessionOnBoot();
 setTimeout(() => { if (state === 'HUB') refreshHubUI(); }, 900);
 
@@ -581,6 +600,7 @@ function refreshHubUI() {
   // 5. Chargeable Hold-to-Ram Hyper Dash Shop Card (10000🌿 per 10s charge, max 3 charges = 30.0s, 1 free starter!)
   const curDashE = Math.min(30, Math.max(0, Number(s.dashEnergy) || 0));
   const stockCnt = (curDashE / 10).toFixed(1);
+  if (propShopWalletTxt) propShopWalletTxt.textContent = s.beans;
   if (hyperStockTxt) hyperStockTxt.textContent = `当前储备：${stockCnt} / 3 个（共 ${curDashE.toFixed(1)}s · 开局赠1个）`;
   if (hyperBuyBtn) {
     if (curDashE >= 29.95) {
@@ -594,9 +614,18 @@ function refreshHubUI() {
     }
   }
 
+  if (propShopHubSummary) {
+    const totalModLv = GARAGE_MODS.reduce((acc, m) => acc + ((s.mods && s.mods[m.key]) || 0), 0);
+    const activeBoostTags = [];
+    if (preSelectedBoost > 0) activeBoostTags.push(`🚀开冲${preSelectedBoost}m`);
+    if (preSelectedDeathBoost > 0) activeBoostTags.push(`🔥死冲${preSelectedDeathBoost}m`);
+    const boostPart = activeBoostTags.length ? ` · ${activeBoostTags.join('+')}` : ' · 开局冲刺';
+    propShopHubSummary.textContent = `☄️霸王冲刺 ${stockCnt}/3 · 🛠️道具强化 ${totalModLv}/12${boostPart}`;
+  }
+
   launchBtn.textContent = s.selectedCheckpoint > 0
-    ? `🐔 从 ${s.selectedCheckpoint}m 出发！`
-    : '🐔 开始游戏！';
+    ? `🐔 单人闯关 · 从 ${s.selectedCheckpoint}m 出发！`
+    : '🐔 单人无尽闯关';
 }
 
 function refreshTalentModalUI() {
@@ -678,6 +707,45 @@ if (talentCloseBtn) talentCloseBtn.addEventListener('click', closeTalentModal);
 if (talentOverlay) {
   talentOverlay.addEventListener('click', (e) => {
     if (e.target === talentOverlay) closeTalentModal();
+  });
+}
+
+function openPropShopModal() {
+  ensureAudio();
+  playSfx('bean');
+  refreshHubUI();
+  if (propShopOverlay) propShopOverlay.classList.remove('hidden');
+}
+
+function closePropShopModal() {
+  if (propShopOverlay) propShopOverlay.classList.add('hidden');
+}
+
+if (propShopHubBar) propShopHubBar.addEventListener('click', openPropShopModal);
+if (propShopOpenBtn) {
+  propShopOpenBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openPropShopModal();
+  });
+}
+if (propShopCloseBtn) propShopCloseBtn.addEventListener('click', closePropShopModal);
+if (propShopDoneBtn) propShopDoneBtn.addEventListener('click', closePropShopModal);
+if (propShopOverlay) {
+  propShopOverlay.addEventListener('click', (e) => {
+    if (e.target === propShopOverlay) closePropShopModal();
+  });
+}
+if (propShopRechargeBtn) {
+  propShopRechargeBtn.addEventListener('click', () => {
+    closePropShopModal();
+    if (typeof openRechargeModal === 'function') openRechargeModal();
+  });
+}
+if (pvpHubQuickMatchBtn) {
+  pvpHubQuickMatchBtn.addEventListener('click', () => {
+    if (partyCtrl && partyCtrl.openAndQuickMatch) {
+      partyCtrl.openAndQuickMatch();
+    }
   });
 }
 
@@ -3397,22 +3465,29 @@ function onSkillRelease() {
 
 function bindBtn(el, onDown, onUp, captureHold = false) {
   if (!el) return;
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
   el.addEventListener('pointerdown', (e) => {
     e.preventDefault(); e.stopPropagation();
-    if (captureHold && el.setPointerCapture) {
+    if (captureHold && el.setPointerCapture && e.pointerId !== undefined) {
       try { el.setPointerCapture(e.pointerId); } catch (_) {}
     }
     el.classList.add('pressed'); onDown();
   });
   const finish = (e) => {
-    if (e) e.preventDefault();
+    if (e && e.cancelable) e.preventDefault();
     if (!el.classList.contains('pressed')) return;
     el.classList.remove('pressed');
     if (onUp) onUp();
   };
   el.addEventListener('pointerup', finish);
   el.addEventListener('pointercancel', finish);
-  if (!captureHold) el.addEventListener('pointerleave', finish);
+  el.addEventListener('lostpointercapture', finish);
+  if (captureHold) {
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('blur', finish);
+  } else {
+    el.addEventListener('pointerleave', finish);
+  }
 }
 
 bindBtn(jumpBtn, () => { jumpHeld = true; player.jumpBufferTimer = 0.14; doJump(); }, () => { jumpHeld = false; }, false);
@@ -3434,6 +3509,7 @@ window.addEventListener('keydown', (e) => {
     || !contactOverlay.classList.contains('hidden')
     || (rankOverlay && !rankOverlay.classList.contains('hidden'))
     || (talentOverlay && !talentOverlay.classList.contains('hidden'))
+    || (propShopOverlay && !propShopOverlay.classList.contains('hidden'))
     || (shareOverlay && !shareOverlay.classList.contains('hidden'))
     || (rechargeOverlay && !rechargeOverlay.classList.contains('hidden'))
     || (partyCtrl && partyCtrl.isModalOpen());
@@ -3443,6 +3519,7 @@ window.addEventListener('keydown', (e) => {
       contactOverlay.classList.add('hidden');
       if (rankOverlay) rankOverlay.classList.add('hidden');
       closeTalentModal();
+      closePropShopModal();
       closeCleanShareModal();
       closeRechargeModal();
       if (partyCtrl) partyCtrl.closeModalsOnEsc();

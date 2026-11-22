@@ -4,13 +4,27 @@
 // + Conservation-of-Value 3-Way Conflict Resolution across ALL devices & tabs!
 // ============================================================================
 
-import { VALID_HERO_IDS, BEAN_TALENTS } from './config.js?v=6.9';
+import { VALID_HERO_IDS, BEAN_TALENTS } from './config.js?v=7.0';
 
 export const SAVE_KEY = 'pelican_brawl_save_v1';
+export const GUEST_SAVE_KEY = 'pelican_brawl_save_guest_v2';
 export const AUTH_KEY = 'pelican_brawl_auth_v1';
 export const SESSION_AUTH_KEY = 'pelican_brawl_tab_auth_v1';
 export const SYNC_BASE_KEY = 'pelican_brawl_sync_base_v1';
 export const LOCAL_REG_CNT_KEY = 'pelican_brawl_reg_cnt_v1';
+
+function normAccountSlotId(username) {
+  const clean = String(username || '').trim().toLowerCase().replace(/[^a-z0-9_\u4e00-\u9fa5.-]/g, '_');
+  return clean ? `u_${clean}` : 'guest';
+}
+
+function getSaveStorageKey(username) {
+  return username ? `pelican_brawl_save_${normAccountSlotId(username)}` : GUEST_SAVE_KEY;
+}
+
+function getBaseStorageKey(username) {
+  return username ? `pelican_brawl_base_${normAccountSlotId(username)}` : '';
+}
 
 const HERO_CUM_COSTS = { 1: 0, 2: 1000, 3: 2800, 4: 5600, 5: 9800, 6: 15800 };
 const HERO_STEP_COSTS = { 1: 1000, 2: 1800, 3: 2800, 4: 4200, 5: 6000 };
@@ -171,14 +185,6 @@ function rebaseLocalDeltaOntoServer(serverSaveRaw, prevBaseRaw, localCurrentRaw)
 }
 
 export function createCloudStore(onUiRefresh) {
-  let save = normalizeSaveObj(defaultSave);
-  try {
-    const rawCur = localStorage.getItem(SAVE_KEY)
-      || localStorage.getItem('abstract_kupao_save_v7')
-      || localStorage.getItem('abstract_bike_save_v6');
-    if (rawCur) save = normalizeSaveObj(JSON.parse(rawCur));
-  } catch (_) {}
-
   let authState = { username: '', token: '' };
   try {
     const rawTabAuth = sessionStorage.getItem(SESSION_AUTH_KEY);
@@ -192,22 +198,61 @@ export function createCloudStore(onUiRefresh) {
     }
   } catch (_) {}
 
-  let syncBase = null; // { rev, issuedAtMs, syncSig, save }
-  try {
-    const rawBase = localStorage.getItem(SYNC_BASE_KEY);
-    if (rawBase) {
-      const pb = JSON.parse(rawBase);
-      if (pb && pb.syncSig && pb.rev && pb.issuedAtMs && pb.save) {
-        syncBase = {
-          rev: Number(pb.rev),
-          issuedAtMs: Number(pb.issuedAtMs),
-          syncSig: String(pb.syncSig),
-          save: normalizeSaveObj(pb.save)
-        };
+  function readGuestSaveFromDisk() {
+    try {
+      const rawGuest = localStorage.getItem(GUEST_SAVE_KEY);
+      if (rawGuest) return normalizeSaveObj(JSON.parse(rawGuest));
+      // Only migrate legacy SAVE_KEY if no account was logged in on this browser (prevents cross-account leak!)
+      if (!localStorage.getItem(AUTH_KEY)) {
+        const legacy = localStorage.getItem(SAVE_KEY);
+        if (legacy) {
+          const parsed = normalizeSaveObj(JSON.parse(legacy));
+          localStorage.setItem(GUEST_SAVE_KEY, JSON.stringify(parsed));
+          return parsed;
+        }
       }
-    }
-  } catch (_) {}
+    } catch (_) {}
+    return normalizeSaveObj(defaultSave);
+  }
 
+  function readUserBaseFromDisk(username) {
+    if (!username) return null;
+    const ownerTag = normAccountSlotId(username);
+    try {
+      const bKey = getBaseStorageKey(username);
+      const rawBase = bKey ? localStorage.getItem(bKey) : null;
+      if (rawBase) {
+        const pb = JSON.parse(rawBase);
+        if (pb && pb.owner === ownerTag && pb.syncSig && pb.rev && pb.issuedAtMs && pb.save) {
+          return {
+            owner: ownerTag,
+            rev: Number(pb.rev),
+            issuedAtMs: Number(pb.issuedAtMs),
+            syncSig: String(pb.syncSig),
+            save: normalizeSaveObj(pb.save)
+          };
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function readUserSaveFromDisk(username, fallbackBase) {
+    if (!username) return readGuestSaveFromDisk();
+    try {
+      const rawUserSave = localStorage.getItem(getSaveStorageKey(username));
+      if (rawUserSave) return normalizeSaveObj(JSON.parse(rawUserSave));
+    } catch (_) {}
+    if (fallbackBase && fallbackBase.save) return normalizeSaveObj(fallbackBase.save);
+    return normalizeSaveObj(defaultSave);
+  }
+
+  let syncBase = authState.token ? readUserBaseFromDisk(authState.username) : null;
+  let save = authState.token
+    ? readUserSaveFromDisk(authState.username, syncBase)
+    : readGuestSaveFromDisk();
+
+  let authEpoch = 1;
   let localSaveRev = 0;
   let syncInFlight = false;
   let syncQueued = false;
@@ -217,23 +262,40 @@ export function createCloudStore(onUiRefresh) {
 
   function writeLocal() {
     save = normalizeSaveObj(save);
-    try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (_) {}
+    const slotKey = authState.token && authState.username
+      ? getSaveStorageKey(authState.username)
+      : GUEST_SAVE_KEY;
+    try { localStorage.setItem(slotKey, JSON.stringify(save)); } catch (_) {}
   }
 
-  function recordServerSnapshot(respData) {
+  function recordServerSnapshot(respData, explicitUsername = '') {
+    const targetUser = explicitUsername || authState.username;
+    if (!targetUser) return;
     if (respData && respData.syncSig && respData.rev && respData.issuedAtMs && respData.save) {
+      const ownerTag = normAccountSlotId(targetUser);
       syncBase = {
+        owner: ownerTag,
         rev: Number(respData.rev),
         issuedAtMs: Number(respData.issuedAtMs),
         syncSig: String(respData.syncSig),
         save: normalizeSaveObj(respData.save)
       };
-      try { localStorage.setItem(SYNC_BASE_KEY, JSON.stringify(syncBase)); } catch (_) {}
+      const bKey = getBaseStorageKey(targetUser);
+      if (bKey) {
+        try { localStorage.setItem(bKey, JSON.stringify(syncBase)); } catch (_) {}
+      }
     }
   }
 
-  function clearServerSnapshot() {
+  function clearServerSnapshot(removeFromDisk = false) {
+    const prevUser = authState.username;
     syncBase = null;
+    if (removeFromDisk && prevUser) {
+      const bKey = getBaseStorageKey(prevUser);
+      if (bKey) {
+        try { localStorage.removeItem(bKey); } catch (_) {}
+      }
+    }
     try { localStorage.removeItem(SYNC_BASE_KEY); } catch (_) {}
   }
 
@@ -259,14 +321,17 @@ export function createCloudStore(onUiRefresh) {
     }, delayMs);
   }
 
-  async function ensureSignedBaseBeforeSync() {
-    if (syncBase && syncBase.syncSig) return true;
+  async function ensureSignedBaseBeforeSync(expectedEpoch, expectedToken, expectedUser) {
+    const ownerTag = normAccountSlotId(expectedUser);
+    if (syncBase && syncBase.syncSig && syncBase.owner === ownerTag) return true;
     try {
-      const r = await fetch('/api/auth/me', { headers: { 'Authorization': `Bearer ${authState.token}` } });
+      const r = await fetch('/api/auth/me', { headers: { 'Authorization': `Bearer ${expectedToken}` } });
       const d = await r.json();
+      if (expectedEpoch !== authEpoch || authState.token !== expectedToken) return false;
       if (r.ok && d && d.ok && d.save) {
-        const prevSnap = syncBase ? syncBase.save : null;
-        recordServerSnapshot(d);
+        const prevSnap = (syncBase && syncBase.owner === ownerTag) ? syncBase.save : null;
+        recordServerSnapshot(d, d.username || expectedUser);
+        // Only rebase if we already had a verified base for THIS EXACT account; otherwise adopt authoritative server save!
         save = prevSnap ? rebaseLocalDeltaOntoServer(d.save, prevSnap, save) : normalizeSaveObj(d.save);
         writeLocal();
         return Boolean(syncBase && syncBase.syncSig);
@@ -277,6 +342,10 @@ export function createCloudStore(onUiRefresh) {
 
   async function syncNow(showFeedback = false, feedbackCb = null) {
     if (!authState.token) return false;
+    const reqEpoch = authEpoch;
+    const reqToken = authState.token;
+    const reqUser = authState.username;
+    const reqOwnerTag = normAccountSlotId(reqUser);
     if (syncInFlight) {
       syncQueued = true;
       queuedShowFeedback = queuedShowFeedback || showFeedback;
@@ -286,11 +355,12 @@ export function createCloudStore(onUiRefresh) {
 
     let ok = false;
     try {
-      await ensureSignedBaseBeforeSync();
+      await ensureSignedBaseBeforeSync(reqEpoch, reqToken, reqUser);
+      if (reqEpoch !== authEpoch || authState.token !== reqToken) return false;
       const sentRev = localSaveRev;
       const payloadSave = normalizeSaveObj(save);
       const reqBody = { save: payloadSave };
-      if (syncBase && syncBase.syncSig) {
+      if (syncBase && syncBase.syncSig && syncBase.owner === reqOwnerTag) {
         reqBody.baseRev = syncBase.rev;
         reqBody.baseIssuedAt = syncBase.issuedAtMs;
         reqBody.baseSig = syncBase.syncSig;
@@ -301,18 +371,19 @@ export function createCloudStore(onUiRefresh) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authState.token}`
+          'Authorization': `Bearer ${reqToken}`
         },
         body: JSON.stringify(reqBody),
         keepalive: true
       });
       const data = await resp.json();
+      if (reqEpoch !== authEpoch || authState.token !== reqToken) return false;
       if (resp.ok && data && data.ok) {
         ok = true;
         if (data.save) {
           // Guard against out-of-order stale response arriving after a newer server recharge snapshot!
-          if (!syncBase || Number(data.rev || 0) >= syncBase.rev) {
-            recordServerSnapshot(data);
+          if (!syncBase || syncBase.owner !== reqOwnerTag || Number(data.rev || 0) >= syncBase.rev) {
+            recordServerSnapshot(data, reqUser);
             if (data.needsRebase) {
               // Adopt authoritative server baseline first
               save = normalizeSaveObj(data.save);
@@ -337,12 +408,12 @@ export function createCloudStore(onUiRefresh) {
         feedbackCb(false, `⚠️ ${data && data.error ? data.error : '同步稍后重试'}`);
       }
     } catch (_) {
-      if (showFeedback && feedbackCb) {
+      if (showFeedback && feedbackCb && reqEpoch === authEpoch) {
         feedbackCb(false, '⚠️ 网络波动，已自动保存在本地');
       }
     } finally {
       syncInFlight = false;
-      if (syncQueued && authState.token) {
+      if (syncQueued && authState.token && reqEpoch === authEpoch) {
         syncQueued = false;
         const fb = queuedShowFeedback;
         queuedShowFeedback = false;
@@ -381,9 +452,20 @@ export function createCloudStore(onUiRefresh) {
     }
 
     try {
+      // STRICT ACCOUNT ISOLATION:
+      // - If registering while already logged into another account, NEVER copy that account's resources -> start fresh from defaultSave!
+      // - If registering as an unauthenticated guest, carry guest save once and reset guest slot so subsequent accounts don't inherit it!
+      const wasGuest = !authState.token;
+      const initialRegSave = wasGuest ? normalizeSaveObj(save) : normalizeSaveObj(defaultSave);
+
+      // Flush outgoing account cleanly if switching directly from Account A -> Account B
+      if (authState.token) {
+        flushBeacon();
+      }
+
       const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login';
       const payload = mode === 'register'
-        ? { username, password, save: normalizeSaveObj(save), ticket: currentTicket, hp_trap: hpTrapVal }
+        ? { username, password, save: initialRegSave, ticket: currentTicket, hp_trap: hpTrapVal }
         : { username, password };
 
       const resp = await fetch(endpoint, {
@@ -401,68 +483,96 @@ export function createCloudStore(onUiRefresh) {
         try {
           const prevCnt = Number(localStorage.getItem(LOCAL_REG_CNT_KEY) || 0);
           localStorage.setItem(LOCAL_REG_CNT_KEY, String(prevCnt + 1));
+          // Reset guest save slot after binding to new account so a future 2nd registration never inherits it!
+          if (wasGuest) {
+            localStorage.setItem(GUEST_SAVE_KEY, JSON.stringify(normalizeSaveObj(defaultSave)));
+          }
+          localStorage.removeItem(SAVE_KEY);
         } catch (_) {}
       }
 
+      authEpoch += 1;
       if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
       syncQueued = false;
+      queuedShowFeedback = false;
+      syncBase = null;
       authState = { username: data.username, token: data.token };
       try { sessionStorage.setItem(SESSION_AUTH_KEY, JSON.stringify(authState)); } catch (_) {}
       try { localStorage.setItem(AUTH_KEY, JSON.stringify(authState)); } catch (_) {}
+      try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem(SYNC_BASE_KEY); } catch (_) {}
 
+      localSaveRev += 1;
       if (data.save) {
-        localSaveRev += 1;
-        recordServerSnapshot(data);
+        recordServerSnapshot(data, data.username);
+        // Adopt ONLY this account's authoritative cloud save — ZERO mixing with any prior local/account state!
         save = normalizeSaveObj(data.save);
         writeLocal();
       }
       if (onUiRefresh) onUiRefresh();
       return { ok: true, username: data.username, mode };
     } catch (_) {
-      return { ok: false, error: '网络波动，当前已为您自动使用本地存档' };
+      return { ok: false, error: '网络波动，请稍后重试' };
     }
   }
 
   function logoutToGuest() {
+    if (authState.token) {
+      flushBeacon();
+    }
+    authEpoch += 1;
     if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
     syncQueued = false;
+    queuedShowFeedback = false;
     authState = { username: '', token: '' };
-    clearServerSnapshot();
+    clearServerSnapshot(false);
     try { sessionStorage.setItem(SESSION_AUTH_KEY, ''); } catch (_) {}
-    try { localStorage.removeItem(AUTH_KEY); } catch (_) {}
+    try { localStorage.removeItem(AUTH_KEY); localStorage.removeItem(SAVE_KEY); } catch (_) {}
     localSaveRev += 1;
     save = normalizeSaveObj(defaultSave);
-    writeLocal();
+    try { localStorage.setItem(GUEST_SAVE_KEY, JSON.stringify(save)); } catch (_) {}
     if (onUiRefresh) onUiRefresh();
   }
 
   function pullSessionOnBoot() {
     if (!authState.token) return;
+    const reqEpoch = authEpoch;
+    const reqToken = authState.token;
+    const reqUser = authState.username;
+    const reqOwnerTag = normAccountSlotId(reqUser);
     const bootRev = localSaveRev;
-    const prevBaseSave = syncBase ? syncBase.save : null;
-    fetch('/api/auth/me', { headers: { 'Authorization': `Bearer ${authState.token}` } })
+    const prevBaseSave = (syncBase && syncBase.owner === reqOwnerTag) ? syncBase.save : null;
+    fetch('/api/auth/me', { headers: { 'Authorization': `Bearer ${reqToken}` } })
       .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {
+        if (reqEpoch !== authEpoch || authState.token !== reqToken) return;
         if (ok && d && d.ok) {
           authState.username = d.username || authState.username;
+          try { sessionStorage.setItem(SESSION_AUTH_KEY, JSON.stringify(authState)); } catch (_) {}
           if (d.save) {
-            recordServerSnapshot(d);
+            recordServerSnapshot(d, authState.username);
             if (localSaveRev === bootRev && (!prevBaseSave || Number(d.rev || 1) >= (syncBase ? syncBase.rev : 1))) {
               save = prevBaseSave ? rebaseLocalDeltaOntoServer(d.save, prevBaseSave, save) : normalizeSaveObj(d.save);
-              if (JSON.stringify(save) !== JSON.stringify(normalizeSaveObj(d.save))) {
+              if (prevBaseSave && JSON.stringify(save) !== JSON.stringify(normalizeSaveObj(d.save))) {
                 scheduleSync(350);
               }
             } else if (prevBaseSave) {
               save = rebaseLocalDeltaOntoServer(d.save, prevBaseSave, save);
               scheduleSync(350);
+            } else {
+              save = normalizeSaveObj(d.save);
             }
             writeLocal();
           }
           if (onUiRefresh) onUiRefresh();
         } else if (d && d.error === '登录已失效') {
+          authEpoch += 1;
           authState = { username: '', token: '' };
-          clearServerSnapshot();
-          try { localStorage.removeItem(AUTH_KEY); } catch (_) {}
+          clearServerSnapshot(false);
+          try { sessionStorage.setItem(SESSION_AUTH_KEY, ''); } catch (_) {}
+          try { localStorage.removeItem(AUTH_KEY); localStorage.removeItem(SAVE_KEY); } catch (_) {}
+          localSaveRev += 1;
+          save = normalizeSaveObj(defaultSave);
+          try { localStorage.setItem(GUEST_SAVE_KEY, JSON.stringify(save)); } catch (_) {}
           if (onUiRefresh) onUiRefresh();
         }
       })
@@ -471,7 +581,8 @@ export function createCloudStore(onUiRefresh) {
 
   function flushBeacon() {
     writeLocal();
-    if (authState.token && syncBase && syncBase.syncSig && navigator.sendBeacon) {
+    const ownerTag = normAccountSlotId(authState.username);
+    if (authState.token && syncBase && syncBase.syncSig && syncBase.owner === ownerTag && navigator.sendBeacon) {
       try {
         const bodyObj = {
           token: authState.token,
@@ -503,10 +614,11 @@ export function createCloudStore(onUiRefresh) {
   }
 
   function applyAuthoritativePaySnapshot(respData) {
-    if (!respData || !respData.save || !respData.syncSig) return false;
-    if (syncBase && Number(respData.rev || 0) < syncBase.rev) return false;
-    const prevBase = syncBase ? syncBase.save : null;
-    recordServerSnapshot(respData);
+    if (!respData || !respData.save || !respData.syncSig || !authState.username) return false;
+    const ownerTag = normAccountSlotId(authState.username);
+    if (syncBase && syncBase.owner === ownerTag && Number(respData.rev || 0) < syncBase.rev) return false;
+    const prevBase = (syncBase && syncBase.owner === ownerTag) ? syncBase.save : null;
+    recordServerSnapshot(respData, authState.username);
     save = prevBase ? rebaseLocalDeltaOntoServer(respData.save, prevBase, save) : normalizeSaveObj(respData.save);
     writeLocal();
     if (onUiRefresh) onUiRefresh();

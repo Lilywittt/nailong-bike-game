@@ -1356,8 +1356,9 @@ def _prune_party_rooms_locked(now_ms: int):
             stale_codes.append(code)
             continue
         if rm.get("status") == "waiting":
+            wait_ttl = 120_000 if rm.get("isQuickmatch") else 300_000
             humans = [p for p in rm.get("players", {}).values() if not p.get("isBot")]
-            if not humans or all((now_ms - int(p.get("lastSyncMs") or rm.get("updatedAtMs") or 0)) > 8500 for p in humans):
+            if not humans or all((now_ms - int(p.get("lastSyncMs") or rm.get("updatedAtMs") or 0)) > wait_ttl for p in humans):
                 stale_codes.append(code)
     for code in stale_codes:
         PARTY_ROOMS.pop(code, None)
@@ -1451,6 +1452,7 @@ def _make_party_player_state(
         "accountKey": account_key,
         "accountName": account_name,
         "isBot": bool(is_bot),
+        "ready": bool(is_bot),
         "x": 120.0,
         "y": 0.0,
         "vx": 0.0,
@@ -1512,6 +1514,7 @@ def _public_party_player_view(p: dict | None, now_ms: int) -> dict | None:
         "nickname": p["nickname"],
         "heroId": p["heroId"],
         "isBot": bool(p.get("isBot")),
+        "ready": bool(p.get("ready") or p.get("isBot")),
         "x": round(float(p.get("x") or 120.0), 1),
         "y": round(float(p.get("y") or 0.0), 1),
         "vx": round(float(p.get("vx") or 0.0), 1),
@@ -2070,6 +2073,10 @@ def _tick_party_bot_locked(room: dict, bot_p: dict, human_p: dict | None, now_ms
         _recompute_party_results_locked(room, now_ms)
 
 
+def _party_clean_room_code(raw: object) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(raw or "").strip().upper())[:8]
+
+
 def _create_party_room_locked(
     player_id: str,
     nickname: str,
@@ -2079,16 +2086,26 @@ def _create_party_room_locked(
     is_quickmatch: bool = False,
     account_key: str = "",
     account_name: str = "",
+    custom_code: str = "",
 ) -> dict:
     _prune_party_rooms_locked(now_ms)
     room_code = ""
-    for _ in range(120):
-        cand = f"{secrets.randbelow(9000) + 1000}"
-        if cand not in PARTY_ROOMS:
-            room_code = cand
-            break
-    if not room_code:
-        room_code = f"{(now_ms % 9000) + 1000}"
+    if custom_code:
+        existing = PARTY_ROOMS.get(custom_code)
+        if existing:
+            if existing.get("status") == "finished" and (now_ms - int(existing.get("updatedAtMs") or 0)) > 15_000:
+                PARTY_ROOMS.pop(custom_code, None)
+            else:
+                return {"_error": f"房号【{custom_code}】已被使用，请换一个房号或直接点击“加入”进房！"}
+        room_code = custom_code
+    else:
+        for _ in range(120):
+            cand = f"{secrets.randbelow(9000) + 1000}"
+            if cand not in PARTY_ROOMS:
+                room_code = cand
+                break
+        if not room_code:
+            room_code = f"{(now_ms % 9000) + 1000}"
 
     track_seed = secrets.randbelow(1_900_000_000) + 100_000
     module_plan = _generate_party_module_plan(track_seed, race_dist)
@@ -2278,7 +2295,7 @@ class GameHandler(SimpleHTTPRequestHandler):
             from urllib.parse import parse_qs, urlparse
 
             qs = parse_qs(urlparse(self.path).query)
-            rcode = (qs.get("roomCode") or [""])[0].strip()[:8]
+            rcode = _party_clean_room_code((qs.get("roomCode") or [""])[0])
             pid = _party_clean_id((qs.get("playerId") or [""])[0])
             qs_hero = (qs.get("heroId") or [""])[0].strip()
             with PARTY_LOCK:
@@ -2293,7 +2310,7 @@ class GameHandler(SimpleHTTPRequestHandler):
                         rm["players"][pid]["heroId"] = qs_hero
                 if rm.get("status") == "finished":
                     for op_id, op_obj in list(rm["players"].items()):
-                        if op_id != pid and not op_obj.get("isBot") and (now - int(op_obj.get("lastSyncMs") or now)) > 8500:
+                        if op_id != pid and not op_obj.get("isBot") and (now - int(op_obj.get("lastSyncMs") or now)) > 22000:
                             _forfeit_party_player_locked(rm, op_id, "disconnect", now)
                 return self.send_json(_build_party_room_response_locked(rm, pid, now, drain_inbox=False))
         if path == "/api/pay/catalog":
@@ -3047,6 +3064,10 @@ class GameHandler(SimpleHTTPRequestHandler):
             pid = _party_clean_id(body.get("playerId"))
             nick = _party_clean_nick(body.get("nickname"), "派对房主")
             hero = _party_clean_hero(body.get("heroId"))
+            raw_custom = str(body.get("customCode") or "").strip()
+            custom_code = _party_clean_room_code(raw_custom)
+            if raw_custom and len(custom_code) < 2:
+                return self.send_json({"ok": False, "error": "自定义房号需为 2~8 位数字或字母！"}, 400)
             acct_key, acct_disp = _resolve_party_account_key(self.extract_token(body), body.get("authUser") or "", now)
             try:
                 race_dist = min(5000, max(1200, int(body.get("raceDist") or 3500)))
@@ -3054,13 +3075,23 @@ class GameHandler(SimpleHTTPRequestHandler):
                 race_dist = 3500
             with PARTY_LOCK:
                 room = _create_party_room_locked(
-                    pid, nick, hero, race_dist, now, is_quickmatch=False, account_key=acct_key, account_name=acct_disp
+                    pid,
+                    nick,
+                    hero,
+                    race_dist,
+                    now,
+                    is_quickmatch=False,
+                    account_key=acct_key,
+                    account_name=acct_disp,
+                    custom_code=custom_code,
                 )
+                if room.get("_error"):
+                    return self.send_json({"ok": False, "error": room["_error"]}, 409)
                 resp = _build_party_room_response_locked(room, pid, now, drain_inbox=False)
             return self.send_json(resp, 200)
 
         if path == "/api/party/set_hero":
-            rcode = re.sub(r"[^0-9]", "", str(body.get("roomCode") or "").strip())[:6]
+            rcode = _party_clean_room_code(body.get("roomCode"))
             pid = _party_clean_id(body.get("playerId"))
             hero = _party_clean_hero(body.get("heroId"))
             with PARTY_LOCK:
@@ -3076,19 +3107,46 @@ class GameHandler(SimpleHTTPRequestHandler):
                 resp = _build_party_room_response_locked(room, pid, now, drain_inbox=False)
             return self.send_json(resp, 200)
 
+        if path == "/api/party/ready":
+            rcode = _party_clean_room_code(body.get("roomCode"))
+            pid = _party_clean_id(body.get("playerId"))
+            want_ready = bool(body.get("ready", True))
+            with PARTY_LOCK:
+                room = PARTY_ROOMS.get(rcode)
+                if not room or pid not in room["players"]:
+                    return self.send_json({"ok": False, "error": "房间不存在或已过期"}, 404)
+                caller = room["players"][pid]
+                caller["lastSyncMs"] = now
+                room["updatedAtMs"] = now
+                if body.get("heroId") in VALID_HEROES and room.get("status") == "waiting":
+                    caller["heroId"] = body["heroId"]
+                if body.get("nickname") and room.get("status") == "waiting":
+                    caller["nickname"] = _party_clean_nick(body.get("nickname"), caller["nickname"])
+                if room.get("status") == "waiting":
+                    caller["ready"] = want_ready
+                    plist = list(room["players"].values())
+                    if len(plist) >= 2 and all(bool(p.get("ready") or p.get("isBot")) for p in plist):
+                        room["status"] = "countdown"
+                        room["isQuickmatch"] = False
+                        room["startAtMs"] = now + PARTY_COUNTDOWN_MS
+                        for pobj in plist:
+                            pobj["lastSyncMs"] = now
+                resp = _build_party_room_response_locked(room, pid, now, drain_inbox=False)
+            return self.send_json(resp, 200)
+
         if path == "/api/party/join":
-            rcode = re.sub(r"[^0-9]", "", str(body.get("roomCode") or "").strip())[:6]
+            rcode = _party_clean_room_code(body.get("roomCode"))
             pid = _party_clean_id(body.get("playerId"))
             nick = _party_clean_nick(body.get("nickname"), "挑战骑手")
             hero = _party_clean_hero(body.get("heroId"))
             acct_key, acct_disp = _resolve_party_account_key(self.extract_token(body), body.get("authUser") or "", now)
-            if len(rcode) != 4:
-                return self.send_json({"ok": False, "error": "请输入正确的 4 位数字房间号！"}, 400)
+            if len(rcode) < 2:
+                return self.send_json({"ok": False, "error": "请输入正确的 2~8 位房间号！"}, 400)
             with PARTY_LOCK:
                 _prune_party_rooms_locked(now)
                 room = PARTY_ROOMS.get(rcode)
                 if not room:
-                    return self.send_json({"ok": False, "error": "房间号不存在或已过期，请核对 4 位房间码！"}, 404)
+                    return self.send_json({"ok": False, "error": "房间号不存在或已过期，请核对房间号！"}, 404)
                 if pid in room["players"]:
                     if room["status"] == "waiting":
                         room["players"][pid]["nickname"] = nick
@@ -3104,15 +3162,16 @@ class GameHandler(SimpleHTTPRequestHandler):
                         },
                         409,
                     )
-                if len(room["players"]) >= 2:
-                    return self.send_json({"ok": False, "error": "该房间已满员 (2/2)，请创建新房间或使用快速匹配！"}, 409)
+                if len(room["players"]) >= 2 or room.get("status") != "waiting":
+                    return self.send_json({"ok": False, "error": "该房间已满员或已发车，请创建新房间或使用快速匹配！"}, 409)
 
                 p2 = _make_party_player_state(
                     pid, 2, nick, hero, now, is_bot=False, account_key=acct_key, account_name=acct_disp
                 )
                 room["players"][pid] = p2
-                room["status"] = "countdown"
-                room["startAtMs"] = now + PARTY_COUNTDOWN_MS
+                room["isQuickmatch"] = False
+                for pobj in room["players"].values():
+                    pobj["lastSyncMs"] = now
                 room["updatedAtMs"] = now
                 if rcode in PARTY_MATCH_QUEUE:
                     PARTY_MATCH_QUEUE.remove(rcode)
@@ -3172,8 +3231,9 @@ class GameHandler(SimpleHTTPRequestHandler):
                         pid, 2, nick, hero, now, is_bot=False, account_key=acct_key, account_name=acct_disp
                     )
                     matched_room["players"][pid] = p2
-                    matched_room["status"] = "countdown"
-                    matched_room["startAtMs"] = now + PARTY_COUNTDOWN_MS
+                    matched_room["isQuickmatch"] = False
+                    for pobj in matched_room["players"].values():
+                        pobj["lastSyncMs"] = now
                     matched_room["updatedAtMs"] = now
                     resp = _build_party_room_response_locked(matched_room, pid, now, drain_inbox=False)
                     resp["matched"] = True
@@ -3187,7 +3247,7 @@ class GameHandler(SimpleHTTPRequestHandler):
             return self.send_json(resp, 200)
 
         if path == "/api/party/add_bot":
-            rcode = re.sub(r"[^0-9]", "", str(body.get("roomCode") or "").strip())[:6]
+            rcode = _party_clean_room_code(body.get("roomCode"))
             pid = _party_clean_id(body.get("playerId"))
             with PARTY_LOCK:
                 _prune_party_rooms_locked(now)
@@ -3199,11 +3259,14 @@ class GameHandler(SimpleHTTPRequestHandler):
                 if len(room["players"]) >= 2:
                     if any(p.get("isBot") for p in room["players"].values()):
                         return self.send_json(_build_party_room_response_locked(room, pid, now, drain_inbox=False), 200)
-                    return self.send_json({"ok": False, "error": "真人劲敌已就位，马上发车！"}, 409)
+                    return self.send_json({"ok": False, "error": "真人劲敌已进房，请点击准备发车！"}, 409)
 
                 host_hero = room["players"][pid]["heroId"]
+                room["players"][pid]["ready"] = True
+                room["players"][pid]["lastSyncMs"] = now
                 cands = [bp for bp in PARTY_BOT_PERSONAS if bp[1] != host_hero] or list(PARTY_BOT_PERSONAS)
-                bot_nick, bot_hero = cands[(int(rcode) + now) % len(cands)]
+                code_hash = sum(ord(c) for c in rcode)
+                bot_nick, bot_hero = cands[(code_hash + now) % len(cands)]
                 bot_id = f"bot_{rcode}"
                 bot_p = _make_party_player_state(bot_id, 2, bot_nick, bot_hero, now, is_bot=True)
                 room["players"][bot_id] = bot_p
@@ -3216,7 +3279,7 @@ class GameHandler(SimpleHTTPRequestHandler):
             return self.send_json(resp, 200)
 
         if path == "/api/party/sync":
-            rcode = re.sub(r"[^0-9]", "", str(body.get("roomCode") or "").strip())[:6]
+            rcode = _party_clean_room_code(body.get("roomCode"))
             pid = _party_clean_id(body.get("playerId"))
             with PARTY_LOCK:
                 room = PARTY_ROOMS.get(rcode)
@@ -3238,12 +3301,12 @@ class GameHandler(SimpleHTTPRequestHandler):
                         rival = op_obj
                         break
 
-                # Automatic disconnect/timeout forfeit if human rival stops syncing for > 8.5s during live race!
+                # Automatic disconnect/timeout forfeit if human rival stops syncing for > 22s during live race!
                 if (
                     rival
                     and not rival.get("isBot")
                     and room.get("status") in ("countdown", "racing")
-                    and (now - int(rival.get("lastSyncMs") or now)) > 8500
+                    and (now - int(rival.get("lastSyncMs") or now)) > 22000
                 ):
                     _forfeit_party_player_locked(room, rival["playerId"], "disconnect", now)
                     rival = None
@@ -3339,7 +3402,7 @@ class GameHandler(SimpleHTTPRequestHandler):
             return self.send_json(resp, 200)
 
         if path == "/api/party/rematch":
-            rcode = re.sub(r"[^0-9]", "", str(body.get("roomCode") or "").strip())[:6]
+            rcode = _party_clean_room_code(body.get("roomCode"))
             pid = _party_clean_id(body.get("playerId"))
             with PARTY_LOCK:
                 room = PARTY_ROOMS.get(rcode)
@@ -3375,6 +3438,7 @@ class GameHandler(SimpleHTTPRequestHandler):
                                 account_key=pobj.get("accountKey") or "",
                                 account_name=pobj.get("accountName") or "",
                             )
+                            fresh["ready"] = True
                             pobj.update(fresh)
                         room["status"] = "countdown"
                         room["startAtMs"] = now + PARTY_COUNTDOWN_MS
@@ -3383,7 +3447,7 @@ class GameHandler(SimpleHTTPRequestHandler):
             return self.send_json(resp, 200)
 
         if path == "/api/party/leave":
-            rcode = re.sub(r"[^0-9]", "", str(body.get("roomCode") or "").strip())[:6]
+            rcode = _party_clean_room_code(body.get("roomCode"))
             pid = _party_clean_id(body.get("playerId"))
             with PARTY_LOCK:
                 room = PARTY_ROOMS.get(rcode)
