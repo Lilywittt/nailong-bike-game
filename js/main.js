@@ -7,6 +7,8 @@ import {
   HEROES,
   GARAGE_MODS,
   BEAN_TALENTS,
+  RECHARGE_PACKS,
+  FIRST_RECHARGE_BONUS_BEANS,
   WORLD_PROP_POOL,
   HEAL_BOBA_PROP,
   TIMED_SHIELD_PROP,
@@ -23,7 +25,7 @@ import {
   getTalentLvFromSave,
   getSuperChargeSpeedMultFromSave,
   getAutoRegenPer5sFromSave
-} from './config.js?v=6.2.5';
+} from './config.js?v=6.9';
 
 import {
   buildAllSculptedAssets,
@@ -31,7 +33,7 @@ import {
   drawSpaldingWheelOn,
   drawSculptedBikeAndHero,
   getEnemySpriteKey
-} from './models.js?v=6.2.5';
+} from './models.js?v=6.9';
 
 import {
   ensureAudio,
@@ -46,9 +48,10 @@ import {
   stopBossBgm,
   playSfx,
   tickProceduralBgm
-} from './audio.js?v=6.2.5';
+} from './audio.js?v=6.9';
 
-import { createCloudStore } from './cloud.js?v=6.2.5';
+import { createCloudStore } from './cloud.js?v=6.9';
+import { createPartyController } from './party.js?v=6.9';
 import {
   initBossCustomState,
   clearBossTransientHazards,
@@ -57,7 +60,7 @@ import {
   handlePlayerBossInteraction,
   updateBossEngine,
   renderBossArenaAndModel
-} from './bosses.js?v=6.2.5';
+} from './bosses.js?v=6.9';
 
 // Zero-allocation in-place array compaction (eliminates 1,400+ GC array allocations/sec!)
 function compactInPlace(arr, keepFn) {
@@ -274,10 +277,13 @@ let preSelectedDeathBoost = 0;
 let deathDashActive = false;
 let bankedRunBeans = 0;
 
+let reopenRechargeAfterAuth = false;
+
 const store = createCloudStore(() => {
   refreshAccountButtonsUI();
   if (state === 'HUB') refreshHubUI();
   if (talentOverlay && !talentOverlay.classList.contains('hidden')) refreshTalentModalUI();
+  if (typeof refreshRechargeWalletHeader === 'function') refreshRechargeWalletHeader();
 });
 store.pullSessionOnBoot();
 setTimeout(() => { if (state === 'HUB') refreshHubUI(); }, 900);
@@ -402,6 +408,12 @@ async function handleAuthSubmit(mode) {
   refreshAccountButtonsUI();
   if (state === 'HUB') refreshHubUI();
   showToast(mode === 'register' ? `☁️ 注册成功！已绑定 ${res.username}` : `☁️ 欢迎回来，${res.username}！`);
+  if (reopenRechargeAfterAuth) {
+    reopenRechargeAfterAuth = false;
+    closeAuthModal();
+    openRechargeModal();
+    return;
+  }
   openAuthModal();
   authLoggedMsg.textContent = mode === 'register'
     ? '✅ 注册成功，绿豆资源与全部等级已上云！'
@@ -669,6 +681,545 @@ if (talentOverlay) {
   });
 }
 
+// ==================== GREEN-BEAN RECHARGE MALL & SERVER-VERIFIED CASHIER ====================
+const rechargeOverlay = document.getElementById('rechargeOverlay');
+const rechargeWalletTxt = document.getElementById('rechargeWalletTxt');
+const rechargeHistoryToggleBtn = document.getElementById('rechargeHistoryToggleBtn');
+const rechargeCloseBtn = document.getElementById('rechargeCloseBtn');
+const rechargeAcctBar = document.getElementById('rechargeAcctBar');
+const rechargeAcctTxt = document.getElementById('rechargeAcctTxt');
+const rechargeGoLoginBtn = document.getElementById('rechargeGoLoginBtn');
+const rechargeFirstBanner = document.getElementById('rechargeFirstBanner');
+const rechargeShopView = document.getElementById('rechargeShopView');
+const rechargeGrid = document.getElementById('rechargeGrid');
+const payChanWechatBtn = document.getElementById('payChanWechatBtn');
+const payChanAlipayBtn = document.getElementById('payChanAlipayBtn');
+const rechargeSubmitBtn = document.getElementById('rechargeSubmitBtn');
+const rechargeCheckoutView = document.getElementById('rechargeCheckoutView');
+const cashierChanTag = document.getElementById('cashierChanTag');
+const cashierTimerTxt = document.getElementById('cashierTimerTxt');
+const cashierPriceTxt = document.getElementById('cashierPriceTxt');
+const cashierGrantTxt = document.getElementById('cashierGrantTxt');
+const cashierQrCanvas = document.getElementById('cashierQrCanvas');
+const cashierOrderIdTxt = document.getElementById('cashierOrderIdTxt');
+const cashierStatusMsg = document.getElementById('cashierStatusMsg');
+const rechargeSandboxPayBtn = document.getElementById('rechargeSandboxPayBtn');
+const rechargeCheckStatusBtn = document.getElementById('rechargeCheckStatusBtn');
+const rechargeCancelOrderBtn = document.getElementById('rechargeCancelOrderBtn');
+const rechargeHistoryView = document.getElementById('rechargeHistoryView');
+const rechargeHistorySummary = document.getElementById('rechargeHistorySummary');
+const rechargeHistoryList = document.getElementById('rechargeHistoryList');
+const rechargeBackToShopBtn = document.getElementById('rechargeBackToShopBtn');
+const hubRechargeBtn = document.getElementById('hubRechargeBtn');
+const hubWalletChip = document.getElementById('hubWalletChip');
+const pauseRechargeBtn = document.getElementById('pauseRechargeBtn');
+const talentRechargeBtn = document.getElementById('talentRechargeBtn');
+
+let selectedPackId = 'pack_6';
+let selectedPayChannel = 'alipay';
+let rechargeFirstEligible = true;
+let rechargeSandboxEnabled = false;
+let activeCheckoutOrder = null;
+let cashierPollTimer = null;
+let cashierCountdownTimer = null;
+let rechargeCreateBusy = false;
+let rechargeSandboxBusy = false;
+
+function refreshRechargeWalletHeader() {
+  const curBeans = store.save.beans || 0;
+  if (rechargeWalletTxt) rechargeWalletTxt.textContent = curBeans.toLocaleString();
+  if (pauseBeanStat && state === 'PAUSED') {
+    pauseBeanStat.textContent = `🌿 钱包 ${curBeans + (runStats ? runStats.beans : 0)}`;
+  }
+  if (talentWalletTxt) talentWalletTxt.textContent = curBeans;
+}
+
+function drawStylizedCashierQr(textCode, channel) {
+  if (!cashierQrCanvas) return;
+  const qctx = cashierQrCanvas.getContext('2d');
+  const size = cashierQrCanvas.width;
+  qctx.fillStyle = '#ffffff';
+  qctx.fillRect(0, 0, size, size);
+  const accent = channel === 'alipay' ? '#1d4ed8' : '#15803d';
+  const gridN = 21;
+  const pad = 10;
+  const cell = (size - pad * 2) / gridN;
+
+  // Deterministic visual matrix hash from order payCodeUrl
+  let seed = 2166136261;
+  for (let i = 0; i < textCode.length; i++) {
+    seed ^= textCode.charCodeAt(i);
+    seed = Math.imul(seed, 16777619) >>> 0;
+  }
+
+  const isFinder = (r, c) => (r < 7 && c < 7) || (r < 7 && c >= gridN - 7) || (r >= gridN - 7 && c < 7);
+  qctx.fillStyle = '#0f172a';
+  for (let r = 0; r < gridN; r++) {
+    for (let c = 0; c < gridN; c++) {
+      if (isFinder(r, c)) continue;
+      if (r >= 8 && r <= 12 && c >= 8 && c <= 12) continue;
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      if ((seed & 3) !== 0) {
+        qctx.fillRect(pad + c * cell, pad + r * cell, Math.ceil(cell - 0.5), Math.ceil(cell - 0.5));
+      }
+    }
+  }
+
+  const drawFinderBox = (r0, c0) => {
+    const x = pad + c0 * cell;
+    const y = pad + r0 * cell;
+    qctx.fillStyle = accent;
+    qctx.fillRect(x, y, cell * 7, cell * 7);
+    qctx.fillStyle = '#ffffff';
+    qctx.fillRect(x + cell, y + cell, cell * 5, cell * 5);
+    qctx.fillStyle = '#0f172a';
+    qctx.fillRect(x + cell * 2, y + cell * 2, cell * 3, cell * 3);
+  };
+  drawFinderBox(0, 0);
+  drawFinderBox(0, gridN - 7);
+  drawFinderBox(gridN - 7, 0);
+
+  // Center emblem
+  qctx.fillStyle = accent;
+  qctx.beginPath();
+  qctx.roundRect(size / 2 - 17, size / 2 - 17, 34, 34, 8);
+  qctx.fill();
+  qctx.fillStyle = '#ffffff';
+  qctx.font = '900 15px sans-serif';
+  qctx.textAlign = 'center';
+  qctx.textBaseline = 'middle';
+  qctx.fillText(channel === 'alipay' ? '支' : '微', size / 2, size / 2 + 1);
+}
+
+function stopCashierTimers() {
+  if (cashierPollTimer) { clearInterval(cashierPollTimer); cashierPollTimer = null; }
+  if (cashierCountdownTimer) { clearInterval(cashierCountdownTimer); cashierCountdownTimer = null; }
+}
+
+function switchRechargeSubView(viewName) {
+  if (rechargeShopView) rechargeShopView.classList.toggle('hidden-block', viewName !== 'shop');
+  if (rechargeCheckoutView) rechargeCheckoutView.classList.toggle('hidden-block', viewName !== 'checkout');
+  if (rechargeHistoryView) rechargeHistoryView.classList.toggle('hidden-block', viewName !== 'history');
+  if (rechargeHistoryToggleBtn) {
+    rechargeHistoryToggleBtn.textContent = viewName === 'history' ? '💎 商城' : '📜 账单';
+  }
+}
+
+function renderRechargeShopUI() {
+  refreshRechargeWalletHeader();
+  const logged = Boolean(store.auth.token && store.auth.username);
+  if (rechargeAcctBar && rechargeAcctTxt && rechargeGoLoginBtn) {
+    if (logged) {
+      rechargeAcctBar.classList.remove('warn-guest');
+      rechargeAcctTxt.textContent = `👤 入账绑定账号：${store.auth.username}（多端防丢）`;
+      rechargeGoLoginBtn.classList.add('hidden-block');
+    } else {
+      rechargeAcctBar.classList.add('warn-guest');
+      rechargeAcctTxt.textContent = '⚠️ 当前为游客，请先登录/注册账号再充值！';
+      rechargeGoLoginBtn.classList.remove('hidden-block');
+    }
+  }
+
+  if (rechargeFirstBanner) {
+    if (rechargeFirstEligible) {
+      rechargeFirstBanner.classList.remove('claimed');
+      rechargeFirstBanner.innerHTML = `🎁 账号首充特权：首次任意档位充值额外狂送 <b>+${FIRST_RECHARGE_BONUS_BEANS.toLocaleString()} 🌿</b>！`;
+    } else {
+      rechargeFirstBanner.classList.add('claimed');
+      rechargeFirstBanner.textContent = '✅ 首充特权已激活领完 · 各档位阶梯加赠永久不限次享！';
+    }
+  }
+
+  if (rechargeGrid) {
+    rechargeGrid.innerHTML = '';
+    for (const p of RECHARGE_PACKS) {
+      const isSel = p.id === selectedPackId;
+      const card = document.createElement('div');
+      card.className = `rc-card ${isSel ? 'selected' : ''}`;
+      const bonusTxt = p.bonusBeans > 0
+        ? `送 +${p.bonusBeans.toLocaleString()}🌿 (${p.bonusPctLbl.replace('多送 ', '')})`
+        : '标准 1元=1000🌿';
+      const firstExtraHtml = rechargeFirstEligible
+        ? `<div class="rc-first-tag">+首充再送 ${FIRST_RECHARGE_BONUS_BEANS.toLocaleString()}🌿</div>`
+        : '';
+      card.innerHTML = `
+        <span class="rc-badge">${p.badge}</span>
+        <div class="rc-beans">🌿 ${p.totalBeans.toLocaleString()}</div>
+        <div class="rc-bonus ${p.bonusBeans === 0 ? 'base-only' : ''}">${bonusTxt}</div>
+        ${firstExtraHtml}
+        <div class="rc-price-pill">¥${p.priceYuan}</div>
+      `;
+      card.addEventListener('click', () => {
+        ensureAudio();
+        playSfx('bean');
+        selectedPackId = p.id;
+        renderRechargeShopUI();
+      });
+      rechargeGrid.appendChild(card);
+    }
+  }
+
+  if (payChanWechatBtn && payChanAlipayBtn) {
+    payChanWechatBtn.classList.toggle('active-wx', selectedPayChannel === 'wechat');
+    payChanAlipayBtn.classList.toggle('active-ali', selectedPayChannel === 'alipay');
+  }
+
+  const selPack = RECHARGE_PACKS.find((x) => x.id === selectedPackId) || RECHARGE_PACKS[1];
+  const expectedBeans = selPack.totalBeans + (rechargeFirstEligible ? FIRST_RECHARGE_BONUS_BEANS : 0);
+  if (rechargeSubmitBtn) {
+    rechargeSubmitBtn.textContent = logged
+      ? `⚡ 立即充值 ¥${selPack.priceYuan} · 立得 ${expectedBeans.toLocaleString()} 🌿`
+      : `🔑 先登录绑定账号 · 充值 ¥${selPack.priceYuan} 得 ${expectedBeans.toLocaleString()} 🌿`;
+  }
+}
+
+async function fetchRechargeCatalogState() {
+  try {
+    const headers = store.auth.token ? { 'Authorization': `Bearer ${store.auth.token}` } : {};
+    const resp = await fetch('/api/pay/catalog', { headers });
+    const data = await resp.json();
+    if (resp.ok && data && data.ok) {
+      rechargeFirstEligible = Boolean(data.firstBonusEligible);
+      rechargeSandboxEnabled = Boolean(data.sandboxEnabled);
+      renderRechargeShopUI();
+    }
+  } catch (_) {}
+}
+
+function handleOrderPaidSettlement(data) {
+  stopCashierTimers();
+  activeCheckoutOrder = null;
+  if (data && data.authSync) {
+    store.applyAuthoritativePaySnapshot(data.authSync);
+  }
+  const ord = (data && data.order) || {};
+  const gotBeans = Number(ord.creditedBeans || data.creditedBeans || 0);
+  const gotFirst = Number(ord.bonusFirstBeans || data.bonusFirstBeans || 0);
+  if (gotFirst > 0 || ord.status === 'PAID') {
+    rechargeFirstEligible = false;
+  }
+  playSfx('crate');
+  refreshRechargeWalletHeader();
+  if (state === 'HUB') refreshHubUI();
+  if (state === 'PAUSED') pauseGame();
+  if (talentOverlay && !talentOverlay.classList.contains('hidden')) refreshTalentModalUI();
+  switchRechargeSubView('shop');
+  renderRechargeShopUI();
+  showToast(gotFirst > 0
+    ? `🎉 充值成功！到账 +${gotBeans.toLocaleString()}🌿（含首充 +${gotFirst.toLocaleString()}🌿）！`
+    : `🎉 充值成功！秒到账 +${gotBeans.toLocaleString()}🌿！`);
+}
+
+function openCashierForOrder(orderObj, payCodeUrl, expectedTotalBeans) {
+  activeCheckoutOrder = orderObj;
+  switchRechargeSubView('checkout');
+  const isAli = orderObj.payChannel === 'alipay';
+  if (cashierChanTag) {
+    cashierChanTag.textContent = isAli ? '💙 支付宝安全收银台' : '💚 微信支付安全收银台';
+    cashierChanTag.style.color = isAli ? '#1d4ed8' : '#15803d';
+  }
+  if (cashierPriceTxt) cashierPriceTxt.textContent = `¥${Number(orderObj.priceYuan).toFixed(2)}`;
+  const basePlusTier = Number(orderObj.baseBeans || 0) + Number(orderObj.bonusTierBeans || 0);
+  const totExpected = expectedTotalBeans || (basePlusTier + (rechargeFirstEligible ? FIRST_RECHARGE_BONUS_BEANS : 0));
+  if (cashierGrantTxt) {
+    cashierGrantTxt.textContent = totExpected > basePlusTier
+      ? `预计到账：${totExpected.toLocaleString()} 🌿（含首充特权 +${(totExpected - basePlusTier).toLocaleString()}🌿）`
+      : `预计到账：${basePlusTier.toLocaleString()} 🌿`;
+  }
+  if (cashierOrderIdTxt) cashierOrderIdTxt.textContent = `单号：${orderObj.orderId}`;
+  if (cashierStatusMsg) {
+    cashierStatusMsg.classList.remove('ok');
+    cashierStatusMsg.textContent = rechargeSandboxEnabled
+      ? '🧪 当前为沙盒调试模式'
+      : '📱 请拿手机【微信 / 支付宝】扫上方二维码真钱支付（勿改单号备注），付款后 2~3 秒自动核验发豆！';
+  }
+  if (rechargeSandboxPayBtn) {
+    rechargeSandboxPayBtn.classList.toggle('hidden-block', !rechargeSandboxEnabled);
+  }
+  const realQrImg = document.getElementById('cashierRealQrImg');
+  const openWebBtn = document.getElementById('rechargeOpenWebPayBtn');
+  if (realQrImg && orderObj._qrDataUrl) {
+    realQrImg.src = orderObj._qrDataUrl;
+    realQrImg.classList.remove('hidden-block');
+    if (cashierQrCanvas) cashierQrCanvas.classList.add('hidden-block');
+  } else {
+    if (realQrImg) realQrImg.classList.add('hidden-block');
+    if (cashierQrCanvas) cashierQrCanvas.classList.remove('hidden-block');
+    drawStylizedCashierQr(payCodeUrl || orderObj.orderId, orderObj.payChannel);
+  }
+  if (openWebBtn) {
+    if (payCodeUrl && payCodeUrl.startsWith('https://')) {
+      openWebBtn.href = payCodeUrl;
+      openWebBtn.classList.remove('hidden-block');
+    } else {
+      openWebBtn.classList.add('hidden-block');
+    }
+  }
+
+  stopCashierTimers();
+  const tickTimer = () => {
+    if (!activeCheckoutOrder) return;
+    const remSec = Math.max(0, Math.floor((activeCheckoutOrder.expiresAt - Date.now()) / 1000));
+    const mm = String(Math.floor(remSec / 60)).padStart(2, '0');
+    const ss = String(remSec % 60).padStart(2, '0');
+    if (cashierTimerTxt) cashierTimerTxt.textContent = `⏳ ${mm}:${ss}`;
+    if (remSec <= 0) {
+      stopCashierTimers();
+      if (cashierStatusMsg) cashierStatusMsg.textContent = '⚠️ 该订单已超时关闭，请返回重新选择档位';
+    }
+  };
+  tickTimer();
+  cashierCountdownTimer = setInterval(tickTimer, 1000);
+  cashierPollTimer = setInterval(() => checkActiveOrderStatus(false), 2600);
+}
+
+async function checkActiveOrderStatus(manualClick = false) {
+  if (!activeCheckoutOrder || !store.auth.token) return;
+  if (manualClick && cashierStatusMsg) {
+    cashierStatusMsg.textContent = '⏳ 正在向官方支付网关实时核验订单流水...';
+  }
+  try {
+    const forceQs = manualClick ? '&force=1' : '';
+    const resp = await fetch(`/api/pay/status?orderId=${encodeURIComponent(activeCheckoutOrder.orderId)}${forceQs}`, {
+      headers: { 'Authorization': `Bearer ${store.auth.token}` }
+    });
+    const data = await resp.json();
+    if (resp.ok && data && data.ok && data.order) {
+      if (data.order.status === 'PAID') {
+        handleOrderPaidSettlement(data);
+        return;
+      }
+      if (data.order.status !== 'PENDING') {
+        stopCashierTimers();
+        if (cashierStatusMsg) cashierStatusMsg.textContent = `⚠️ 订单状态：${data.order.status}`;
+      } else if (manualClick && cashierStatusMsg) {
+        cashierStatusMsg.textContent = '⏳ 暂未查到支付入账流水，若刚付完请稍等 2 秒再点一次';
+      }
+    }
+  } catch (_) {
+    if (manualClick && cashierStatusMsg) cashierStatusMsg.textContent = '⚠️ 网络波动，请稍后重试';
+  }
+}
+
+async function createRechargeOrder() {
+  ensureAudio();
+  if (!store.auth.token || !store.auth.username) {
+    closeRechargeModal();
+    reopenRechargeAfterAuth = true;
+    openAuthModal();
+    authMsg.textContent = '💡 请先登录或注册账号，充值绿豆将永久绑定账号不丢失！';
+    return;
+  }
+  if (rechargeCreateBusy) return;
+  rechargeCreateBusy = true;
+  if (rechargeSubmitBtn) rechargeSubmitBtn.textContent = '⏳ 正在安全创建加密订单...';
+  try {
+    const resp = await fetch('/api/pay/create_order', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${store.auth.token}`
+      },
+      body: JSON.stringify({
+        packId: selectedPackId,
+        payChannel: selectedPayChannel
+      })
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data || !data.ok) {
+      showToast(`⚠️ ${(data && data.error) || '创建订单失败'}`);
+      renderRechargeShopUI();
+      return;
+    }
+    rechargeFirstEligible = Boolean(data.firstBonusEligible);
+    rechargeSandboxEnabled = Boolean(data.sandboxEnabled);
+    if (data.order && data.qrDataUrl) {
+      data.order._qrDataUrl = data.qrDataUrl;
+    }
+    playSfx('bean');
+    openCashierForOrder(data.order, data.checkoutUrl || data.payCodeUrl, data.expectedTotalBeans);
+  } catch (_) {
+    showToast('⚠️ 网络连接异常，请稍后重试');
+    renderRechargeShopUI();
+  } finally {
+    rechargeCreateBusy = false;
+  }
+}
+
+async function triggerSandboxPayConfirm() {
+  if (!activeCheckoutOrder || !store.auth.token || rechargeSandboxBusy) return;
+  ensureAudio();
+  rechargeSandboxBusy = true;
+  if (cashierStatusMsg) cashierStatusMsg.textContent = '⏳ 正在执行 HMAC-SHA256 回调验签与原子入账...';
+  try {
+    const resp = await fetch('/api/pay/sandbox_pay', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${store.auth.token}`
+      },
+      body: JSON.stringify({ orderId: activeCheckoutOrder.orderId })
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data || !data.ok) {
+      if (cashierStatusMsg) cashierStatusMsg.textContent = `❌ ${(data && data.error) || '沙盒回调失败'}`;
+      return;
+    }
+    handleOrderPaidSettlement(data);
+  } catch (_) {
+    if (cashierStatusMsg) cashierStatusMsg.textContent = '❌ 网络异常，请点击刷新入账状态确认';
+  } finally {
+    rechargeSandboxBusy = false;
+  }
+}
+
+async function cancelActiveOrderAndBack() {
+  const oid = activeCheckoutOrder ? activeCheckoutOrder.orderId : '';
+  stopCashierTimers();
+  activeCheckoutOrder = null;
+  switchRechargeSubView('shop');
+  renderRechargeShopUI();
+  if (oid && store.auth.token) {
+    fetch('/api/pay/cancel', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${store.auth.token}`
+      },
+      body: JSON.stringify({ orderId: oid })
+    }).catch(() => {});
+  }
+}
+
+async function loadAndShowOrderHistory() {
+  switchRechargeSubView('history');
+  if (!store.auth.token) {
+    if (rechargeHistorySummary) rechargeHistorySummary.textContent = '🔑 请先登录账号查看名下充值账单';
+    if (rechargeHistoryList) rechargeHistoryList.innerHTML = '<div class="rank-empty">未登录状态暂无账单</div>';
+    return;
+  }
+  if (rechargeHistoryList) rechargeHistoryList.innerHTML = '<div class="rank-empty">⏳ 正在读取加密账单...</div>';
+  try {
+    const resp = await fetch('/api/pay/orders', {
+      headers: { 'Authorization': `Bearer ${store.auth.token}` }
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data || !data.ok) {
+      if (rechargeHistoryList) rechargeHistoryList.innerHTML = `<div class="rank-empty">⚠️ ${(data && data.error) || '加载失败'}</div>`;
+      return;
+    }
+    rechargeFirstEligible = Boolean(data.firstBonusEligible);
+    if (rechargeHistorySummary) {
+      rechargeHistorySummary.textContent = `📊 累计成功 ${data.totalPaidCount} 笔 · 实付 ¥${Number(data.totalPaidYuan).toFixed(2)} · 获豆 ${Number(data.totalCreditedBeans).toLocaleString()} 🌿`;
+    }
+    const orders = data.orders || [];
+    if (orders.length === 0) {
+      rechargeHistoryList.innerHTML = '<div class="rank-empty">暂无充值订单记录</div>';
+      return;
+    }
+    rechargeHistoryList.innerHTML = '';
+    for (const o of orders) {
+      const row = document.createElement('div');
+      row.className = 'order-hist-row';
+      const stMap = {
+        PAID: '<span style="color:#16a34a;">✅ 已到账</span>',
+        PENDING: '<span style="color:#d97706;">⏳ 待支付</span>',
+        CANCELLED: '<span style="color:#64748b;">已取消</span>',
+        EXPIRED: '<span style="color:#94a3b8;">已超时</span>'
+      };
+      const dtStr = new Date(o.paidAt || o.createdAt).toLocaleTimeString('zh-CN', { hour12: false });
+      const beanInfo = o.status === 'PAID'
+        ? `+${Number(o.creditedBeans).toLocaleString()}🌿`
+        : `¥${Number(o.priceYuan).toFixed(2)}`;
+      row.innerHTML = `
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          <span>${o.packName} · ¥${Number(o.priceYuan).toFixed(2)}</span>
+          <span style="font-size:10px;color:#64748b;font-family:monospace;">${o.orderId.slice(0, 18)} · ${dtStr}</span>
+        </div>
+        <div style="text-align:right;display:flex;flex-direction:column;gap:2px;">
+          <span style="color:#15803d;">${beanInfo}</span>
+          <span style="font-size:10.5px;">${stMap[o.status] || o.status}</span>
+        </div>
+      `;
+      rechargeHistoryList.appendChild(row);
+    }
+  } catch (_) {
+    if (rechargeHistoryList) rechargeHistoryList.innerHTML = '<div class="rank-empty">⚠️ 网络波动，稍后重试</div>';
+  }
+}
+
+function openRechargeModal() {
+  ensureAudio();
+  playSfx('bean');
+  stopCashierTimers();
+  activeCheckoutOrder = null;
+  switchRechargeSubView('shop');
+  renderRechargeShopUI();
+  if (rechargeOverlay) rechargeOverlay.classList.remove('hidden');
+  fetchRechargeCatalogState();
+}
+
+function closeRechargeModal() {
+  stopCashierTimers();
+  reopenRechargeAfterAuth = false;
+  if (rechargeOverlay) rechargeOverlay.classList.add('hidden');
+}
+
+if (hubRechargeBtn) hubRechargeBtn.addEventListener('click', openRechargeModal);
+if (hubWalletChip) hubWalletChip.addEventListener('click', openRechargeModal);
+if (pauseRechargeBtn) pauseRechargeBtn.addEventListener('click', openRechargeModal);
+if (talentRechargeBtn) talentRechargeBtn.addEventListener('click', openRechargeModal);
+if (rechargeCloseBtn) rechargeCloseBtn.addEventListener('click', closeRechargeModal);
+if (rechargeOverlay) {
+  rechargeOverlay.addEventListener('click', (e) => {
+    if (e.target === rechargeOverlay) closeRechargeModal();
+  });
+}
+if (rechargeGoLoginBtn) {
+  rechargeGoLoginBtn.addEventListener('click', () => {
+    closeRechargeModal();
+    reopenRechargeAfterAuth = true;
+    openAuthModal();
+  });
+}
+if (payChanWechatBtn) {
+  payChanWechatBtn.addEventListener('click', () => {
+    playSfx('bean');
+    selectedPayChannel = 'wechat';
+    renderRechargeShopUI();
+  });
+}
+if (payChanAlipayBtn) {
+  payChanAlipayBtn.addEventListener('click', () => {
+    playSfx('bean');
+    selectedPayChannel = 'alipay';
+    renderRechargeShopUI();
+  });
+}
+if (rechargeSubmitBtn) rechargeSubmitBtn.addEventListener('click', createRechargeOrder);
+if (rechargeSandboxPayBtn) rechargeSandboxPayBtn.addEventListener('click', triggerSandboxPayConfirm);
+if (rechargeCheckStatusBtn) rechargeCheckStatusBtn.addEventListener('click', () => checkActiveOrderStatus(true));
+if (rechargeCancelOrderBtn) rechargeCancelOrderBtn.addEventListener('click', cancelActiveOrderAndBack);
+if (rechargeHistoryToggleBtn) {
+  rechargeHistoryToggleBtn.addEventListener('click', () => {
+    playSfx('bean');
+    const inHist = rechargeHistoryView && !rechargeHistoryView.classList.contains('hidden-block');
+    if (inHist) {
+      switchRechargeSubView('shop');
+      renderRechargeShopUI();
+    } else {
+      loadAndShowOrderHistory();
+    }
+  });
+}
+if (rechargeBackToShopBtn) {
+  rechargeBackToShopBtn.addEventListener('click', () => {
+    playSfx('bean');
+    switchRechargeSubView('shop');
+    renderRechargeShopUI();
+  });
+}
+
 if (hyperBuyBtn) {
   hyperBuyBtn.addEventListener('click', () => {
     ensureAudio();
@@ -833,8 +1384,10 @@ const player = {
 
 let jumpHeld = false;
 let actionHeld = false;
+let partyCtrl = null;
 
 function getBaseSurfaceY(wx) {
+  if (partyCtrl && partyCtrl.isActive()) return partyCtrl.getSurfaceY(wx);
   if (wx < 380) return 0;
   const t = (wx - 380) * 0.0016;
   return Math.sin(t) * 20 + Math.sin(t * 2.1 + 1.1) * 9;
@@ -914,19 +1467,21 @@ function bankRunProgress(pushToCloud = false) {
     bankedRunBeans = runStats.beans;
     changed = true;
   }
-  if (runStats.dist > s.bestDist) {
-    s.bestDist = runStats.dist;
-    changed = true;
-  }
-  if (runStats.singleRunDist > (s.bestSingleRun || 0)) {
-    s.bestSingleRun = runStats.singleRunDist;
-    changed = true;
-  }
-  const cpReached = Math.floor(runStats.dist / 500) * 500;
-  if (cpReached > s.maxCheckpoint) {
-    s.maxCheckpoint = cpReached;
-    s.selectedCheckpoint = cpReached;
-    changed = true;
+  if (!partyCtrl || !partyCtrl.isActive()) {
+    if (runStats.dist > s.bestDist) {
+      s.bestDist = runStats.dist;
+      changed = true;
+    }
+    if (runStats.singleRunDist > (s.bestSingleRun || 0)) {
+      s.bestSingleRun = runStats.singleRunDist;
+      changed = true;
+    }
+    const cpReached = Math.floor(runStats.dist / 500) * 500;
+    if (cpReached > s.maxCheckpoint) {
+      s.maxCheckpoint = cpReached;
+      s.selectedCheckpoint = cpReached;
+      changed = true;
+    }
   }
   if (changed || pushToCloud) {
     store.markMutatedAndSave(pushToCloud);
@@ -1070,7 +1625,7 @@ function spawnNextBonusFormation() {
 
 // Strict <= 5% Base Playtime Cap + Talent #1 (+5%/Lv) + Pelican Hero Passive (+10%):
 function addSuperCharge(rawGain) {
-  if (superBonusTimer > 0 || headStartTargetDist > 0) return;
+  if ((partyCtrl && partyCtrl.isActive()) || superBonusTimer > 0 || headStartTargetDist > 0) return;
   const heroBonusMult = activeRunHeroId === 'pelican' ? 1.10 : 1.0;
   const chargeMult = getSuperChargeSpeedMultFromSave(store.save) * heroBonusMult;
   const effMinSec = MIN_NORMAL_SEC_FOR_BONUS / chargeMult;
@@ -1173,7 +1728,7 @@ function grantTempShield(amount, durSec, showPop = true) {
   player.tempShieldHp = Math.min(60, Math.round(Math.max(player.tempShieldHp, amount)));
   player.tempShieldTimer = Math.max(player.tempShieldTimer, durSec);
   if (showPop) {
-    addPopup(`🛡️ +${Math.round(amount)}限时盾(${durSec.toFixed(0)}s)`, player.x + 20, player.y - 98, '#38bdf8', 18);
+    addPopup(`🛡️ 背带金钟罩 +${Math.round(amount)}`, player.x + 20, player.y - 98, '#38bdf8', 18);
   }
   updateTopHUD();
 }
@@ -1195,7 +1750,7 @@ function activateWorldProp(def) {
   if (def.id === 'timed_shield') {
     const shAmt = Math.round(18 + player.maxHp * 0.07);
     grantTempShield(shAmt, 6.5, true);
-    showToast(`🛡️ 限时护盾 +${shAmt} (6.5秒后自动过期)!`);
+    showToast(`🛡️ 背带金钟罩 +${shAmt} · 黑子不破防!`);
     refreshBuffChips();
     updateTopHUD();
     return;
@@ -1264,7 +1819,7 @@ function refreshBuffChips() {
   }
   if (superBonusTimer > 0) list.push(`🌈 超级奖励 ${superBonusTimer.toFixed(0)}s`);
   if (player.tempShieldHp > 0 && player.tempShieldTimer > 0) {
-    list.push(`🛡️ 限时盾 ${Math.ceil(player.tempShieldHp)} (${player.tempShieldTimer.toFixed(1)}s)`);
+    list.push(`🛡️ 背带金钟罩 ${Math.ceil(player.tempShieldHp)} (${player.tempShieldTimer.toFixed(1)}s)`);
   }
   if (player.giantTimer > 0) list.push(`🌶️ 巨人化 ${player.giantTimer.toFixed(1)}s`);
   if (player.rocketDashTimer > 0) list.push(`🚀 氮气罐 ${player.rocketDashTimer.toFixed(1)}s`);
@@ -1276,6 +1831,10 @@ function refreshBuffChips() {
   if (player.midasTimer > 0) list.push(`🪙 点豆成金 ${player.midasTimer.toFixed(1)}s`);
   if (player.thunderAuraTimer > 0) list.push(`⚡ 雷电护体 ${player.thunderAuraTimer.toFixed(1)}s`);
   if (player.skyWingsTimer > 0) list.push(`🪽 滑翔飞翼 ${player.skyWingsTimer.toFixed(1)}s`);
+  if (partyCtrl && partyCtrl.isActive()) {
+    const pLabels = partyCtrl.getExtraBuffLabels();
+    for (let i = 0; i < pLabels.length; i++) list.push(pLabels[i]);
+  }
 
   const sig = list.join('|');
   if (uiCache.buffSig === sig) return;
@@ -1498,6 +2057,7 @@ function refreshHealSupplyUI() {
 }
 
 function tryBuyInRunHealSupply() {
+  if (partyCtrl && partyCtrl.isActive()) return;
   if (state !== 'PLAYING' && state !== 'PAUSED') return;
   ensureAudio();
   const used = runStats.healBuysUsed || 0;
@@ -1562,9 +2122,32 @@ function refreshPauseHyperShopUI(highlight = false) {
 
 function pauseGame(wantHyperShop = false) {
   if (state !== 'PLAYING') return;
-  state = 'PAUSED';
+  const inParty = Boolean(partyCtrl && partyCtrl.isActive());
+  if (inParty && !pauseOverlay.classList.contains('hidden')) {
+    resumeFromPause();
+    return;
+  }
   jumpHeld = false;
   onActionRelease();
+  if (inParty && partyCtrl.setStaminaHeld) partyCtrl.setStaminaHeld(false);
+
+  const pauseStatRow = pauseDistStat ? pauseDistStat.parentElement : null;
+  const healShopParent = pauseBuyHealBtn ? pauseBuyHealBtn.parentElement : null;
+  if (healShopParent) healShopParent.classList.toggle('hidden-block', inParty);
+  if (pauseHyperShopBox) pauseHyperShopBox.classList.toggle('hidden-block', inParty);
+  if (pauseRestartBtn) pauseRestartBtn.classList.toggle('hidden-block', inParty);
+  if (pauseStatRow) pauseStatRow.classList.toggle('hidden-block', inParty);
+
+  if (inParty) {
+    // Real-time simultaneous multiplayer NEVER freezes the world (`state` stays 'PLAYING')!
+    if (pauseModalTitle) pauseModalTitle.textContent = '🏁 实时竞速中 (不暂停)';
+    if (pauseResumeBtn) pauseResumeBtn.textContent = '▶️ 返回比赛';
+    if (pauseExitBtn) pauseExitBtn.textContent = '🏳️ 认输退出';
+    pauseOverlay.classList.remove('hidden');
+    return;
+  }
+
+  state = 'PAUSED';
   forceStopHyperDash();
   pauseBossBgm();
   bankRunProgress(true);
@@ -1572,6 +2155,7 @@ function pauseGame(wantHyperShop = false) {
     pauseModalTitle.textContent = wantHyperShop ? '☄️ 超级霸王究极冲刺 · 局内补给' : '⏸️ 游戏暂停';
   }
   if (pauseResumeBtn) pauseResumeBtn.textContent = '▶️ 继续游戏';
+  if (pauseExitBtn) pauseExitBtn.textContent = '🏠 结算退出';
   refreshPauseHyperShopUI(wantHyperShop);
   pauseOverlay.classList.remove('hidden');
 }
@@ -1600,12 +2184,15 @@ if (pauseBuyHyperBtn) {
 }
 
 function resumeFromPause() {
-  if (state !== 'PAUSED') return;
+  if (state !== 'PAUSED' && pauseOverlay.classList.contains('hidden')) return;
+  const wasPaused = (state === 'PAUSED');
   pauseOverlay.classList.add('hidden');
   if (pauseResumeBtn) pauseResumeBtn.textContent = '▶️ 继续游戏';
-  state = 'PLAYING';
-  player.invulnTimer = Math.max(player.invulnTimer, 1.2);
-  resumeBossBgmIfNeeded(Boolean(activeBoss) && superBonusTimer <= 0);
+  if (wasPaused) {
+    state = 'PLAYING';
+    player.invulnTimer = Math.max(player.invulnTimer, 1.2);
+    resumeBossBgmIfNeeded(Boolean(activeBoss) && superBonusTimer <= 0);
+  }
 }
 
 function openGameOverModal() {
@@ -1832,7 +2419,10 @@ if (shareOverlay) {
 }
 
 window.addEventListener('blur', () => {
-  if (state === 'PLAYING') forceStopHyperDash();
+  if (state === 'PLAYING') {
+    forceStopHyperDash();
+    if (partyCtrl && partyCtrl.setStaminaHeld) partyCtrl.setStaminaHeld(false);
+  }
 });
 
 function finishRunAndOpenHub() {
@@ -1854,8 +2444,8 @@ launchBtn.addEventListener('click', () => {
   startNewRun(store.save.selectedHero, store.save.selectedCheckpoint, preSelectedBoost);
 });
 pauseBtn.addEventListener('click', () => {
-  if (state === 'PLAYING') pauseGame();
-  else if (state === 'PAUSED') resumeFromPause();
+  if (!pauseOverlay.classList.contains('hidden') || state === 'PAUSED') resumeFromPause();
+  else if (state === 'PLAYING') pauseGame();
 });
 pauseResumeBtn.addEventListener('click', resumeFromPause);
 pauseCloseX.addEventListener('click', resumeFromPause);
@@ -1866,6 +2456,10 @@ pauseRestartBtn.addEventListener('click', () => {
 });
 pauseExitBtn.addEventListener('click', () => {
   pauseOverlay.classList.add('hidden');
+  if (partyCtrl && partyCtrl.isActive()) {
+    partyCtrl.exitPartyToHub();
+    return;
+  }
   finishRunAndOpenHub();
 });
 goRetryBtn.addEventListener('click', () => {
@@ -1883,7 +2477,7 @@ document.addEventListener('visibilitychange', () => {
       pendingShare.leftPage = true;
       pendingShare.departedAt = Date.now();
     }
-    if (state === 'PLAYING') pauseGame();
+    if (state === 'PLAYING' && !(partyCtrl && partyCtrl.isActive())) pauseGame();
   } else {
     checkPendingShareOnReturn();
   }
@@ -1968,7 +2562,7 @@ function trySpawnTrackPropsAt(chunkDist, spawnX) {
 }
 
 function spawnWorldAhead() {
-  if (superBonusTimer > 0) return;
+  if (superBonusTimer > 0 || (partyCtrl && partyCtrl.isActive())) return;
 
   while (120 + nextFlagDist * 18 < player.x + 1500) {
     const fx = 120 + nextFlagDist * 18;
@@ -2399,7 +2993,7 @@ function getBossCallbacks() {
 
 // Hold-to-Ram Invincible Hyper Dash (with anti-slip pointer capture, 0.24s grace & empty->pause shop!)
 function onHyperDashPress() {
-  if (state !== 'PLAYING' || headStartTargetDist > 0) return;
+  if ((partyCtrl && partyCtrl.isActive()) || state !== 'PLAYING' || headStartTargetDist > 0) return;
   ensureAudio();
   const curE = Math.min(30, Math.max(0, Number(store.save.dashEnergy) || 0));
   if (curE <= 0.05) {
@@ -2631,6 +3225,9 @@ function onActionPress() {
   }
 
   pushCapped(shockwaves, { x: player.x + 48, y: player.y - 44, r: 12, maxR: 116, life: 0.18, color: '#fb923c', harmless: true }, 12);
+  if (partyCtrl && partyCtrl.isActive() && partyCtrl.tryMeleeShoulderBump) {
+    partyCtrl.tryMeleeShoulderBump();
+  }
   let hitAnyMob = false;
   for (let i = 0; i < enemies.length; i++) {
     const en = enemies[i];
@@ -2717,6 +3314,9 @@ function fireNailoongFlamePulse(dtSlice) {
       hitBoss(14.5, false, false, true);
     }
   }
+  if (partyCtrl && partyCtrl.isActive() && partyCtrl.tryHitRivalWithHeroSkill) {
+    partyCtrl.tryHitRivalWithHeroSkill(player.x + 210, player.y - 52, 260, 30, '🔥 奶龙烈焰');
+  }
 }
 
 function onSkillPress() {
@@ -2782,6 +3382,9 @@ function onSkillPress() {
     playGentleSkillAccent('hakimi', Boolean(activeBoss));
     spawnAlliedMaodieSwarm(6);
     pushCapped(shockwaves, { x: player.x, y: player.y, r: 14, maxR: 245, life: 0.32, color: '#fb923c', harmless: false }, 12);
+    if (partyCtrl && partyCtrl.isActive() && partyCtrl.tryHitRivalWithHeroSkill) {
+      partyCtrl.tryHitRivalWithHeroSkill(player.x + 130, player.y - 48, 250, 36, '🐱 耄耋爪击');
+    }
     addPopup('🐱 狂丢圆头耄耋!!', player.x + 28, player.y - 96, '#fdba74', 19);
   }
   syncControlsUI();
@@ -2831,7 +3434,9 @@ window.addEventListener('keydown', (e) => {
     || !contactOverlay.classList.contains('hidden')
     || (rankOverlay && !rankOverlay.classList.contains('hidden'))
     || (talentOverlay && !talentOverlay.classList.contains('hidden'))
-    || (shareOverlay && !shareOverlay.classList.contains('hidden'));
+    || (shareOverlay && !shareOverlay.classList.contains('hidden'))
+    || (rechargeOverlay && !rechargeOverlay.classList.contains('hidden'))
+    || (partyCtrl && partyCtrl.isModalOpen());
   if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || anyModalOpen) {
     if (e.code === 'Escape') {
       closeAuthModal();
@@ -2839,17 +3444,19 @@ window.addEventListener('keydown', (e) => {
       if (rankOverlay) rankOverlay.classList.add('hidden');
       closeTalentModal();
       closeCleanShareModal();
+      closeRechargeModal();
+      if (partyCtrl) partyCtrl.closeModalsOnEsc();
     }
     return;
   }
   if (e.repeat) return;
   if (e.code === 'Escape' || e.code === 'KeyP') {
     e.preventDefault();
-    if (state === 'PLAYING') pauseGame(false);
-    else if (state === 'PAUSED') resumeFromPause();
+    if (!pauseOverlay.classList.contains('hidden') || state === 'PAUSED') resumeFromPause();
+    else if (state === 'PLAYING') pauseGame(false);
     return;
   }
-  if (state === 'PAUSED' && (e.code === 'Space' || e.code === 'Enter')) {
+  if ((state === 'PAUSED' || !pauseOverlay.classList.contains('hidden')) && (e.code === 'Space' || e.code === 'Enter')) {
     e.preventDefault();
     resumeFromPause();
     return;
@@ -2859,10 +3466,34 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (state !== 'PLAYING') return;
+  if (partyCtrl && partyCtrl.isActive()) {
+    if (e.code === 'Digit1') {
+      e.preventDefault();
+      partyCtrl.useItemSlot(0);
+      return;
+    }
+    if (e.code === 'Digit2') {
+      e.preventDefault();
+      partyCtrl.useItemSlot(1);
+      return;
+    }
+    if (e.code === 'KeyE' && partyCtrl.hasItemInSlot(0)) {
+      e.preventDefault();
+      partyCtrl.useItemSlot(0);
+      return;
+    }
+    if (e.code === 'KeyF' && (partyCtrl.hasItemInSlot(1) || partyCtrl.hasItemInSlot(0))) {
+      e.preventDefault();
+      if (!partyCtrl.useItemSlot(1)) partyCtrl.useItemSlot(0);
+      return;
+    }
+  }
   if (e.code === 'Space' || e.code === 'KeyW' || e.code === 'ArrowUp') {
     e.preventDefault(); jumpHeld = true; player.jumpBufferTimer = 0.14; doJump();
   } else if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.key === 'Shift' || e.code === 'KeyR' || e.code === 'KeyQ') {
-    e.preventDefault(); onHyperDashPress();
+    e.preventDefault();
+    if (partyCtrl && partyCtrl.isActive()) partyCtrl.setStaminaHeld(true);
+    else onHyperDashPress();
   } else if (e.code === 'KeyK' || e.code === 'KeyE') {
     e.preventDefault(); onSkillPress();
   } else if (e.code === 'KeyJ' || e.code === 'KeyF' || e.code === 'Enter') {
@@ -2874,7 +3505,10 @@ window.addEventListener('keydown', (e) => {
 
 window.addEventListener('keyup', (e) => {
   if (e.code === 'Space' || e.code === 'KeyW' || e.code === 'ArrowUp') jumpHeld = false;
-  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.key === 'Shift' || e.code === 'KeyR' || e.code === 'KeyQ') onHyperDashRelease();
+  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.key === 'Shift' || e.code === 'KeyR' || e.code === 'KeyQ') {
+    if (partyCtrl && partyCtrl.isActive()) partyCtrl.setStaminaHeld(false);
+    onHyperDashRelease();
+  }
   if (e.code === 'KeyK' || e.code === 'KeyE') onSkillRelease();
   if (e.code === 'KeyJ' || e.code === 'KeyF' || e.code === 'Enter') onActionRelease();
 });
@@ -2958,6 +3592,11 @@ function takePlayerDamage(rawDmg = 11, isPitFall = false) {
   if (state !== 'PLAYING' || headStartTargetDist > 0 || superBonusTimer > 0 || player.hyperDashActive) return;
   if (!isPitFall && (player.invulnTimer > 0 || player.giantTimer > 0 || player.rocketDashTimer > 0)) return;
 
+  if (partyCtrl && partyCtrl.isActive() && partyCtrl.tryConsumeOneHitShield(isPitFall)) {
+    updateTopHUD();
+    return;
+  }
+
   if (player.orbitSawTimer > 0 && player.sawShieldCharges > 0) {
     player.sawShieldCharges = 0;
     player.invulnTimer = 0.85;
@@ -2991,8 +3630,11 @@ function takePlayerDamage(rawDmg = 11, isPitFall = false) {
     }
   }
 
-  const instantDmg = Math.max(4, Math.round(dmg * 0.55));
-  const smoothBleed = Math.max(0, dmg - instantDmg);
+  const inPartyHit = Boolean(partyCtrl && partyCtrl.isActive());
+  const instantDmg = inPartyHit
+    ? Math.max(26, Math.min(36, Math.round(rawDmg * 1.85)))
+    : Math.max(4, Math.round(dmg * 0.55));
+  const smoothBleed = inPartyHit ? 0 : Math.max(0, dmg - instantDmg);
   player.hp = Math.max(0, player.hp - instantDmg);
   player.dotPool = Math.min(player.maxHp * 0.45, (player.dotPool || 0) + smoothBleed);
   player.regenPool = Math.max(0, player.regenPool * 0.45);
@@ -3018,6 +3660,10 @@ function takePlayerDamage(rawDmg = 11, isPitFall = false) {
   updateTopHUD();
 
   if (player.hp <= 0) {
+    if (partyCtrl && partyCtrl.isActive()) {
+      partyCtrl.triggerPartyPlayerKO(isPitFall);
+      return;
+    }
     tryTriggerLethalDeathDashOrDie();
   }
 }
@@ -3113,6 +3759,31 @@ function spawnStageBoss() {
   playCriticalMomentVoice('boss_spawn', tpl.kind);
 }
 
+function spawnPartyRaceBoss(detIndex = 0) {
+  if (activeBoss) return;
+  const tpl = BOSS_ROSTER[Math.abs(Math.floor(detIndex)) % BOSS_ROSTER.length] || BOSS_ROSTER[0];
+  const raceBossHp = 135;
+  activeBoss = {
+    tier: 2, tierLbl: '竞速', tierBg: tpl.tierBg,
+    kind: tpl.kind, sprite: tpl.sprite, name: tpl.name,
+    maxHp: raceBossHp, hp: raceBossHp,
+    dmgRate: 36, dmgBudget: 75, maxBudget: 95,
+    phase: 1, maxPhases: 2,
+    reward: 45,
+    partySpawnDist: runStats.dist,
+    worldX: player.x + 330, yOff: 0,
+    skillIdx: 0, minionTimer: 7.5,
+    stunTimer: 0, flashTimer: 0
+  };
+  initBossCustomState(activeBoss, player.x);
+  bossHazards.length = 0;
+  refreshBossHudUI();
+  bossHud.classList.remove('hidden');
+  playSfx('crater');
+  startBossBgm();
+  playCriticalMomentVoice('boss_spawn', tpl.kind);
+}
+
 function hitBoss(dmg, causesStun = false, isCounter = false, isSkill = false) {
   if (!activeBoss) return;
   let dealt = 0;
@@ -3202,9 +3873,13 @@ function hitBoss(dmg, causesStun = false, isCounter = false, isSkill = false) {
     runStats.beans += rewardBeans;
     const bossHeal = Math.max(22, Math.round(player.maxHp * 0.22));
     healPlayer(bossHeal, 0.55, true);
-    addSuperCharge(6.0);
-    bankRunProgress(true);
-    showToast(`🏆 击败${bossName} · 赏金 +${rewardBeans}🌿!`);
+    if (partyCtrl && partyCtrl.isActive()) {
+      partyCtrl.onPartyBossDefeated(bossName);
+    } else {
+      addSuperCharge(6.0);
+      bankRunProgress(true);
+      showToast(`🏆 击败${bossName} · 赏金 +${rewardBeans}🌿!`);
+    }
   }
 }
 
@@ -3355,11 +4030,15 @@ function update(realDt) {
       player.dotPool = Math.max(0, player.dotPool - bleedStep);
       player.hp = Math.max(0, player.hp - bleedStep);
       if (player.hp <= 0) {
-        tryTriggerLethalDeathDashOrDie();
-        if (state === 'DYING') return;
+        if (partyCtrl && partyCtrl.isActive()) {
+          partyCtrl.triggerPartyPlayerKO(false);
+        } else {
+          tryTriggerLethalDeathDashOrDie();
+          if (state === 'DYING') return;
+        }
       }
     }
-    const curEnvDrain = getSurvivalGradient(runStats.singleRunDist).envDrain || 0;
+    const curEnvDrain = (partyCtrl && partyCtrl.isActive()) ? 0 : (getSurvivalGradient(runStats.singleRunDist).envDrain || 0);
     if (curEnvDrain > 0 && player.hp > 1.5 && player.tempShieldHp <= 0) {
       player.hp = Math.max(1.2, player.hp - curEnvDrain * realDt);
     }
@@ -3418,14 +4097,22 @@ function update(realDt) {
   }
   if (stageFadeTimer > 0) stageFadeTimer = Math.max(0, stageFadeTimer - realDt * 1.1);
 
-  // Camera dynamically shifts right when 🐕 大狗嚼 chases from BEHIND!
+  // Camera dynamically shifts & zooms for rear Boss pursuit AND Party neck-and-neck framing / Kun Rocket!
+  const isPartyActive = Boolean(partyCtrl && partyCtrl.isActive());
+  const partyKunRocket = isPartyActive && partyCtrl.isPureKunRocket && partyCtrl.isPureKunRocket();
+  const partyFastSurge = isPartyActive && partyCtrl.isHighSpeedBoost && partyCtrl.isHighSpeedBoost();
+  const partyCamHint = (isPartyActive && partyCtrl.getCameraFramingHint) ? partyCtrl.getCameraFramingHint() : null;
   const wantScreenRatio = (activeBoss && activeBoss.pinnedByHyper && superBonusTimer <= 0)
     ? 0.78
-    : ((activeBoss && activeBoss.kind === 'dagou_jiao' && superBonusTimer <= 0) ? 0.39 : 0.18);
-  smoothPlayerScreenRatio += (wantScreenRatio - smoothPlayerScreenRatio) * Math.min(1, realDt * 4.2);
+    : ((activeBoss && activeBoss.kind === 'dagou_jiao' && superBonusTimer <= 0)
+      ? 0.39
+      : (partyKunRocket ? 0.31 : (partyCamHint ? partyCamHint.ratio : (partyFastSurge ? 0.25 : 0.18))));
+  smoothPlayerScreenRatio += (wantScreenRatio - smoothPlayerScreenRatio) * Math.min(1, realDt * 5.2);
 
-  const targetZoom = (player.giantTimer > 0 || player.hyperDashActive || headStartTargetDist > 0 || superBonusTimer > 0 || player.thunderTongueTimer > 0) ? 0.90 : 1.0;
-  smoothCamZoom += (targetZoom - smoothCamZoom) * Math.min(1, realDt * 3.5);
+  const targetZoom = (player.giantTimer > 0 || player.hyperDashActive || headStartTargetDist > 0 || superBonusTimer > 0 || player.thunderTongueTimer > 0 || partyKunRocket)
+    ? 0.88
+    : (partyCamHint ? partyCamHint.zoom : (partyFastSurge ? 0.93 : 1.0));
+  smoothCamZoom += (targetZoom - smoothCamZoom) * Math.min(1, realDt * 4.5);
   const targetRefY = superBonusTimer > 0 ? -220 : Math.min(player.y, getBaseSurfaceY(player.x) + 45);
   smoothCamRefY += (targetRefY - smoothCamRefY) * Math.min(1, realDt * 5.2);
 
@@ -3685,6 +4372,9 @@ function update(realDt) {
   if (player.swallowVortexTimer > 0) {
     player.swallowVortexTimer -= realDt;
     const mouthX = player.x + 42, mouthY = player.y - 82;
+    if (partyCtrl && partyCtrl.isActive() && partyCtrl.tryHitRivalWithHeroSkill) {
+      partyCtrl.tryHitRivalWithHeroSkill(player.x + 175, player.y - 54, 240, 34, '🦩 大嘴鲸吞');
+    }
     for (let i = 0; i < enemyShots.length; i++) {
       const sh = enemyShots[i];
       if (!sh.dead && sh.x > player.x - 20 && sh.x < player.x + 420) {
@@ -3747,6 +4437,9 @@ function update(realDt) {
     player.thunderTongueAngle += 24.0 * realDt;
     const cx = player.x + 4, cy = player.y - 68;
     const tongueR = 375;
+    if (partyCtrl && partyCtrl.isActive() && partyCtrl.tryHitRivalWithHeroSkill) {
+      partyCtrl.tryHitRivalWithHeroSkill(cx + 120, cy, 275, 34, '⚡ 雷霆长舌');
+    }
     checkEnvironmentImpactArea(cx + 110, cy, 240);
     for (let i = 0; i < enemyShots.length; i++) {
       if (!enemyShots[i].dead && Math.hypot(enemyShots[i].x - cx, enemyShots[i].y - cy) < tongueR) enemyShots[i].dead = true;
@@ -3824,9 +4517,15 @@ function update(realDt) {
     }
   }
 
-  const curNormalVx = player.baseSpeed + grad.speedAdd;
+  const isPartyMode = Boolean(partyCtrl && partyCtrl.isActive());
+  const curNormalVx = isPartyMode ? player.baseSpeed : (player.baseSpeed + grad.speedAdd);
   let desiredVx = curNormalVx;
-  if (headStartTargetDist > 0) desiredVx = Math.round(curNormalVx * 3.15);
+  if (isPartyMode) {
+    const surfaceMult = onIce ? 1.18 : (inMud ? 0.76 : 1.0);
+    const smallBoost = player.boostTimer > 0 ? 1.15 : 1.0;
+    const ropeDelta = partyCtrl.getRopeSpeedDelta ? partyCtrl.getRopeSpeedDelta() : 0;
+    desiredVx = Math.max(60, Math.round(curNormalVx * surfaceMult * smallBoost * partyCtrl.getSpeedMultiplier() + ropeDelta));
+  } else if (headStartTargetDist > 0) desiredVx = Math.round(curNormalVx * 3.15);
   else if (player.hyperDashActive) {
     // Anchored directly to current normal speed — distinctly faster even when pinning a Boss!
     desiredVx = Math.round(curNormalVx * (activeBoss && activeBoss.pinnedByHyper ? 1.78 : 2.35));
@@ -3835,8 +4534,9 @@ function update(realDt) {
   else if (superBonusTimer > 0) desiredVx = Math.round(curNormalVx * 1.42);
   else if (player.boostTimer > 0 || player.giantTimer > 0 || player.skyWingsTimer > 0 || onIce) desiredVx *= onIce ? 1.22 : 1.18;
   else if (inMud) desiredVx *= 0.75;
-  player.vx += (desiredVx - player.vx) * Math.min(1, dt * 8);
+  player.vx += (desiredVx - player.vx) * Math.min(1, dt * (isPartyMode ? 24 : 8));
 
+  const isPartyKunFlight = isPartyMode && partyCtrl.isPureKunRocket && partyCtrl.isPureKunRocket();
   if (headStartTargetDist > 0) {
     player.x += player.vx * dt;
     const flyY = getBaseSurfaceY(player.x) - 115;
@@ -3868,11 +4568,11 @@ function update(realDt) {
       player.y += (flyY - player.y) * Math.min(1, dt * 14);
     }
     player.vy = 0; player.onGround = false; player.angle = -0.04;
-  } else if (player.rocketDashTimer > 0) {
+  } else if (player.rocketDashTimer > 0 || isPartyKunFlight) {
     player.x += player.vx * dt;
-    const flyY = superBonusTimer > 0 ? -290 : getBaseSurfaceY(player.x) - 95;
-    player.y += (flyY - player.y) * Math.min(1, dt * 10);
-    player.vy = 0; player.onGround = false; player.angle = -0.05;
+    const flyY = superBonusTimer > 0 ? -290 : getBaseSurfaceY(player.x) - (isPartyKunFlight ? 72 : 95);
+    player.y += (flyY - player.y) * Math.min(1, dt * 12);
+    player.vy = 0; player.onGround = false; player.angle = -0.06;
   } else {
     player.x += player.vx * dt;
   }
@@ -3887,14 +4587,14 @@ function update(realDt) {
   }
 
   const curStageIdx = Math.floor(runStats.dist / STAGE_SPAN_M) % STAGES.length;
-  if (curStageIdx !== stageIndex && superBonusTimer <= 0) {
+  if (!isPartyMode && curStageIdx !== stageIndex && superBonusTimer <= 0) {
     prevStageIndex = stageIndex;
     stageFadeTimer = 1.0;
     stageIndex = curStageIdx;
     showToast(STAGES[stageIndex].name);
   }
 
-  if (recordFlag && !recordFlag.passed && player.x >= recordFlag.x) {
+  if (!isPartyMode && recordFlag && !recordFlag.passed && player.x >= recordFlag.x) {
     recordFlag.passed = true;
     playSfx('crate');
     playCriticalMomentVoice('new_record');
@@ -3917,13 +4617,13 @@ function update(realDt) {
     }
   }
 
-  if (!activeBoss && superBonusTimer <= 0 && runStats.dist >= nextTruckDist) {
+  if (!isPartyMode && !activeBoss && superBonusTimer <= 0 && runStats.dist >= nextTruckDist) {
     nextTruckDist = runStats.dist + 380;
     const tx = player.x + 480;
     cashTrucks.push({ x: tx, y: getBaseSurfaceY(tx), hp: 6, dead: false, flash: 0 });
     showToast('🚨 装甲运钞车！用技能或踩顶打爆它!');
   }
-  if (!activeBoss && superBonusTimer <= 0 && headStartTargetDist <= 0 && runStats.dist >= nextBossDist) {
+  if (!isPartyMode && !activeBoss && superBonusTimer <= 0 && headStartTargetDist <= 0 && runStats.dist >= nextBossDist) {
     spawnStageBoss();
   }
 
@@ -3971,6 +4671,10 @@ function update(realDt) {
       if (tState.isPit && player.y > tState.baseY + 84) {
         if (player.giantTimer > 0) {
           player.y = tState.baseY; player.vy = -560;
+        } else if (isPartyMode) {
+          if (!partyCtrl.tryConsumeOneHitShield(true)) {
+            partyCtrl.triggerPartyPlayerKO(true);
+          }
         } else {
           player.x += 55;
           player.y = tState.baseY - 75;
@@ -4203,6 +4907,9 @@ function update(realDt) {
         handlePlayerBossInteraction(activeBoss, getBossCallbacks(), 'projectile');
         hitBoss(48, true, false, true);
       }
+      if (isPartyMode && pr.life > 0 && partyCtrl.tryHitRivalWithHeroSkill && partyCtrl.tryHitRivalWithHeroSkill(pr.x, pr.y, pr.r + 48, 42, '🏀 巨型篮球')) {
+        pr.vy = -620;
+      }
       continue;
     } else if (pr.kind === 'riot_saw') {
       pr.x += pr.vx * dt; pr.y = getBaseSurfaceY(pr.x) - pr.r; pr.rot += 20 * dt; pr.life -= dt;
@@ -4226,6 +4933,13 @@ function update(realDt) {
           enemies[j].shielded = false; defeatEnemy(enemies[j]);
           if (pr.kind === 'fish_shot') pr.life = 0;
         }
+      }
+    }
+    if (isPartyMode && pr.life > 0 && partyCtrl.tryHitRivalWithHeroSkill) {
+      const pDmg = pr.kind === 'shark_bomb' ? 38 : (pr.kind === 'bowling_mob' ? 34 : 28);
+      if (partyCtrl.tryHitRivalWithHeroSkill(pr.x, pr.y, (pr.r || 18) + 46, pDmg, '🎯 飞弹技能')) {
+        pr.bouncesLeft = 0;
+        pr.life = 0;
       }
     }
     if (activeBoss && pr.life > 0 && Math.hypot(pr.x - activeBoss.worldX, pr.y - (getBaseSurfaceY(activeBoss.worldX) - 54 + activeBoss.yOff)) < pr.r + 60) {
@@ -4276,6 +4990,20 @@ function update(realDt) {
 
     if (hasBossImmediateParryCue(activeBoss, player)) parryGlow = true;
     if (hasBossImmediateJumpCue(activeBoss, player)) jumpGlow = true;
+
+    if (isPartyMode) {
+      if (partyCtrl.isKunRocketActive() && Math.abs(activeBoss.worldX - player.x) < 150) {
+        hitBoss(75 * dt, false, false, true);
+      }
+      if (activeBoss && (runStats.dist - (activeBoss.partySpawnDist || 0)) > 290) {
+        stopBossBgm();
+        bossHud.classList.add('hidden');
+        bossHud.classList.remove('enraged');
+        enemyShots.length = 0;
+        bossHazards.length = 0;
+        activeBoss = null;
+      }
+    }
   }
 
   // Road Enemy & Shot Updates (Aggression & Shot Speed Scale Purely by Distance Tier!)
@@ -4427,7 +5155,7 @@ function update(realDt) {
   compactInPlace(popups, (p) => p.life > 0);
 
   // Zero-allocation in-place world cleanup!
-  const cut = cam.camX - 280;
+  const cut = isPartyMode ? (cam.camX - 1000) : (cam.camX - 280);
   compactInPlace(pits, (p) => p.x + p.len > cut);
   compactInPlace(mudZones, (m) => m.x + m.len > cut);
   compactInPlace(iceZones, (iz) => iz.x + iz.len > cut);
@@ -4447,6 +5175,10 @@ function update(realDt) {
   compactInPlace(roadScars, (s) => s.x > cut);
   compactInPlace(beans, (b) => !b.taken && b.x > cut);
   compactInPlace(enemies, (e) => !e.hit && e.x > cut);
+
+  if (isPartyMode) {
+    partyCtrl.updatePartyFrame(realDt);
+  }
 
   syncControlsUI();
   updateTopHUD();
@@ -4696,6 +5428,10 @@ function render() {
         if (wx === x1) ctx.moveTo(wx, ry); else ctx.lineTo(wx, ry);
       }
       ctx.stroke();
+    }
+
+    if (partyCtrl && partyCtrl.isActive()) {
+      partyCtrl.renderWorldTrackExtras(ctx, startWX, endWX);
     }
 
     for (let i = 0; i < backboards.length; i++) {
@@ -4963,16 +5699,30 @@ function render() {
     ctx.restore();
   }
 
+  if (partyCtrl && partyCtrl.isActive()) {
+    partyCtrl.renderWorldRivalAndVfx(ctx, startWX, endWX);
+  }
+
   ctx.save();
   if (player.invulnTimer > 0 && state === 'PLAYING' && !player.hyperDashActive && player.giantTimer <= 0 && headStartTargetDist <= 0 && Math.floor(player.invulnTimer * 14) % 2 === 0) {
     ctx.globalAlpha = 0.55;
+  }
+  const dizzyRot = (partyCtrl && partyCtrl.isActive()) ? partyCtrl.getDizzyAngleOffset() : 0;
+  const partyRocket = Boolean(partyCtrl && partyCtrl.isActive() && partyCtrl.isKunRocketActive());
+  const pToon = (partyCtrl && partyCtrl.isActive() && partyCtrl.getPlayerCartoonTransform)
+    ? partyCtrl.getPlayerCartoonTransform()
+    : null;
+  if (pToon) {
+    ctx.translate(player.x, player.y + (pToon.offY || 0));
+    ctx.scale(pToon.sx, pToon.sy);
+    ctx.translate(-player.x, -player.y);
   }
   drawSculptedBikeAndHero(
     ctx,
     activeRunHeroId,
     player.x,
     player.y,
-    player.angle,
+    player.angle + dizzyRot + (pToon ? pToon.extraRot : 0),
     player.wheelAngle,
     player.crankAngle,
     player.jiggle,
@@ -4986,10 +5736,14 @@ function render() {
       magnetActive: player.magnetTimer > 0,
       mortarActive: player.mortarTimer > 0,
       hideWheels: state === 'DYING',
-      rocketDash: headStartTargetDist > 0 || player.rocketDashTimer > 0 || player.hyperDashActive
+      rocketDash: headStartTargetDist > 0 || player.rocketDashTimer > 0 || player.hyperDashActive || partyRocket
     }
   );
   ctx.restore();
+
+  if (partyCtrl && partyCtrl.isActive() && partyCtrl.renderWorldPostPlayer) {
+    partyCtrl.renderWorldPostPlayer(ctx, startWX, endWX);
+  }
 
   // Spectacular Blazing Comet Shroud & Mach Rings ONLY while Hyper Dash is Active!
   if (player.hyperDashActive) {
@@ -5070,6 +5824,10 @@ function render() {
 
   ctx.restore();
 
+  if (partyCtrl && partyCtrl.isActive()) {
+    partyCtrl.renderScreenEdgeIndicators(ctx, cam, W, H);
+  }
+
   if (state === 'DYING' || state === 'GAMEOVER') {
     ctx.fillStyle = 'rgba(15, 23, 42, 0.38)';
     ctx.fillRect(0, 0, W, H);
@@ -5078,9 +5836,194 @@ function render() {
   ctx.restore();
 }
 
+function startPartyRunSetup(heroId) {
+  ensureAudio();
+  const s = store.save;
+  activeRunHeroId = heroId || s.selectedHero || 'nailong';
+  const h = getHero();
+
+  runStartDist = 0;
+  runStats = {
+    dist: 0,
+    singleRunDist: 0,
+    beans: 0,
+    bossKills: 0,
+    reviveUsed: true,
+    healBuysUsed: 3,
+    deathDashMeters: 0,
+    deathDashUsed: true
+  };
+  deathDashActive = false;
+  bankedRunBeans = 0;
+  combo = 0; comboTimer = 0;
+  superCharge = 0;
+  normalPlayDistSinceBonus = 0;
+  normalPlaySecSinceBonus = 0;
+  superBonusTimer = 0;
+  bonusSkyAlpha = 0;
+  headStartTargetDist = 0;
+  quickDashWindowTimer = 0;
+  shakeTime = 0; hitStopTimer = 0; deathSlowTimer = 0;
+  stageIndex = 0; prevStageIndex = 0; stageFadeTimer = 0;
+  activeBoss = null;
+  recordFlag = null;
+  stopBossBgm();
+
+  bossHud.classList.add('hidden');
+  bossHud.classList.remove('enraged');
+  comboTag.classList.add('hidden');
+  quickDashWrap.classList.add('hidden');
+  gameOverOverlay.classList.add('hidden');
+  pauseOverlay.classList.add('hidden');
+  hubOverlay.classList.add('hidden');
+
+  pits = []; mudZones = []; iceZones = []; snowballs = []; lilyPads = []; catapults = []; backboards = [];
+  barrels = []; hangers = []; bells = []; geysers = []; laserGates = [];
+  rails = []; checkpointFlags = []; worldProps = []; cashTrucks = [];
+  beans = []; enemies = []; projectiles = []; enemyShots = []; bossHazards = [];
+  flamePuffs = []; speedLines = []; roadScars = []; shockwaves = [];
+  flyingDebris = []; popups = []; hyperGhosts = [];
+
+  player.x = 120;
+  player.y = getBaseSurfaceY(120);
+  smoothCamRefY = player.y;
+  smoothCamZoom = 1.0;
+  smoothPlayerScreenRatio = 0.22;
+  player.vy = 0;
+  player.baseSpeed = h.id === 'hakimi' ? 364 : 356;
+  player.vx = 0;
+  player.boostTimer = 0; player.giantTimer = 0; player.magnetTimer = 0; player.rocketDashTimer = 0;
+  player.hyperDashHolding = false; player.hyperDashActive = false; player.hyperSessionSec = 0;
+  player.mortarTimer = 0; player.mortarShotTick = 0;
+  player.sawShieldCharges = 0; player.tempShieldHp = 0; player.tempShieldTimer = 0;
+  player.angle = 0; player.onGround = true; player.onRail = null;
+  player.coyoteTimer = 0; player.jumpBufferTimer = 0;
+  player.maxHp = 100;
+  player.hp = 100;
+  player.regenPool = 0;
+  player.dotPool = 0;
+  player.displayHp = 100;
+  player.trailHp = 100;
+  hpTrailFill.style.width = '100%';
+  hpMainFill.style.width = '100%';
+  player.jumpsLeft = h.id === 'hakimi' ? 4 : 2;
+  player.invulnTimer = 1.2; player.hurtPoseTimer = 0;
+  player.strikeTimer = 0; player.actionCd = 0;
+  player.skillCd = 0; player.skillMaxCd = h.skillCd || 3.0; player.skillHeld = false;
+  player.flameHolding = false; player.flameBurstTimer = 0; player.flameFuel = 100;
+  player.swallowVortexTimer = 0; player.swallowedCount = 0;
+  player.thunderTongueTimer = 0; player.thunderTongueAngle = 0; player.thunderBossTick = 0;
+  player.weaponId = null; player.weaponTimer = 0;
+  player.mountId = null; player.mountTimer = 0;
+  player.orbitSawTimer = 0;
+  player.midasTimer = 0; player.thunderAuraTimer = 0; player.thunderAuraTick = 0; player.skyWingsTimer = 0;
+  player.slashLines = [];
+
+  state = 'PLAYING';
+  refreshBuffChips();
+  syncControlsUI();
+  updateTopHUD();
+}
+
+function returnToHubFromParty() {
+  stopBossBgm();
+  bankRunProgress(true);
+  state = 'HUB';
+  const pauseStatRow = pauseDistStat ? pauseDistStat.parentElement : null;
+  const healShopParent = pauseBuyHealBtn ? pauseBuyHealBtn.parentElement : null;
+  if (healShopParent) healShopParent.classList.remove('hidden-block');
+  if (pauseHyperShopBox) pauseHyperShopBox.classList.remove('hidden-block');
+  if (pauseRestartBtn) pauseRestartBtn.classList.remove('hidden-block');
+  if (pauseStatRow) pauseStatRow.classList.remove('hidden-block');
+  if (pauseExitBtn) pauseExitBtn.textContent = '🏠 结算退出';
+  pauseOverlay.classList.add('hidden');
+  gameOverOverlay.classList.add('hidden');
+  bossHud.classList.add('hidden');
+  quickDashWrap.classList.add('hidden');
+  actionBtn.classList.remove('glow');
+  refreshHubUI();
+  hubOverlay.classList.remove('hidden');
+}
+
+partyCtrl = createPartyController({
+  store,
+  player,
+  getRunStats: () => runStats,
+  getState: () => state,
+  startPartyRunSetup,
+  returnToHubFromParty,
+  getWorldArrays: () => ({
+    pits,
+    mudZones,
+    iceZones,
+    snowballs,
+    lilyPads,
+    backboards,
+    barrels,
+    hangers,
+    bells,
+    laserGates,
+    rails,
+    beans,
+    enemies,
+    cashTrucks,
+    shockwaves,
+    flamePuffs,
+    popups,
+    speedLines
+  }),
+  addPopup,
+  showToast,
+  getMaxJumps,
+  defeatEnemy,
+  hitCashTruck,
+  refreshBuffChips,
+  refreshHubUI,
+  playHeroSelectVoice,
+  getEnemySpriteKey,
+  getStages: () => STAGES,
+  getStageIndex: () => stageIndex,
+  spawnPartyRaceBoss,
+  getActiveBoss: () => activeBoss,
+  triggerPartyHitImpact: (power = 1.0, isBoostKick = false) => {
+    shakeTime = Math.max(shakeTime, (isBoostKick ? 0.24 : 0.38) * power);
+    shakeMag = Math.max(shakeMag, Math.round((isBoostKick ? 11 : 16) * power));
+    if (!isBoostKick) {
+      hitStopTimer = Math.max(hitStopTimer, 0.055 * Math.min(1.4, power));
+      player.hurtPoseTimer = Math.max(player.hurtPoseTimer, 0.62);
+      hurtOverlay.style.opacity = '1';
+      setTimeout(() => { hurtOverlay.style.opacity = '0'; }, 240);
+      for (let i = 0; i < 4; i++) {
+        pushCapped(flyingDebris, {
+          kind: 'loose_wheel',
+          x: player.x + (Math.random() - 0.5) * 32,
+          y: player.y - 36 - i * 10,
+          vx: player.vx * 0.35 + (Math.random() - 0.5) * 260,
+          vy: -320 - Math.random() * 190,
+          rot: 0,
+          vRot: (i % 2 === 0 ? 1 : -1) * 14,
+          r: 14,
+          life: 0.95
+        }, 20);
+      }
+    }
+  },
+  setPartyStageTheme: (nextIdx) => {
+    const clamped = Math.max(0, Math.min(STAGES.length - 1, Number(nextIdx) || 0));
+    if (clamped !== stageIndex) {
+      prevStageIndex = stageIndex;
+      stageFadeTimer = 0.85;
+      stageIndex = clamped;
+    }
+  }
+});
+
 function flushBeforeUnload() {
   bankRunProgress(false);
   store.flushBeacon();
+  if (partyCtrl && partyCtrl.flushLeaveBeacon) {
+    partyCtrl.flushLeaveBeacon();
+  }
 }
 window.addEventListener('beforeunload', flushBeforeUnload);
 window.addEventListener('pagehide', flushBeforeUnload);

@@ -4,10 +4,11 @@
 // + Conservation-of-Value 3-Way Conflict Resolution across ALL devices & tabs!
 // ============================================================================
 
-import { VALID_HERO_IDS, BEAN_TALENTS } from './config.js?v=6.2.5';
+import { VALID_HERO_IDS, BEAN_TALENTS } from './config.js?v=6.9';
 
 export const SAVE_KEY = 'pelican_brawl_save_v1';
 export const AUTH_KEY = 'pelican_brawl_auth_v1';
+export const SESSION_AUTH_KEY = 'pelican_brawl_tab_auth_v1';
 export const SYNC_BASE_KEY = 'pelican_brawl_sync_base_v1';
 export const LOCAL_REG_CNT_KEY = 'pelican_brawl_reg_cnt_v1';
 
@@ -180,11 +181,13 @@ export function createCloudStore(onUiRefresh) {
 
   let authState = { username: '', token: '' };
   try {
-    const rawAuth = localStorage.getItem(AUTH_KEY);
+    const rawTabAuth = sessionStorage.getItem(SESSION_AUTH_KEY);
+    const rawAuth = rawTabAuth !== null ? rawTabAuth : localStorage.getItem(AUTH_KEY);
     if (rawAuth) {
       const pa = JSON.parse(rawAuth);
       if (pa && pa.token && pa.username) {
         authState = { username: String(pa.username), token: String(pa.token) };
+        try { sessionStorage.setItem(SESSION_AUTH_KEY, JSON.stringify(authState)); } catch (_) {}
       }
     }
   } catch (_) {}
@@ -307,18 +310,21 @@ export function createCloudStore(onUiRefresh) {
       if (resp.ok && data && data.ok) {
         ok = true;
         if (data.save) {
-          recordServerSnapshot(data);
-          if (data.needsRebase) {
-            // Adopt authoritative server baseline first
-            save = normalizeSaveObj(data.save);
-          } else if (localSaveRev === sentRev) {
-            save = normalizeSaveObj(data.save);
-          } else {
-            // Additional clicks happened while request was in flight -> rebase remaining delta cleanly!
-            save = rebaseLocalDeltaOntoServer(data.save, payloadSave, save);
-            syncQueued = true;
+          // Guard against out-of-order stale response arriving after a newer server recharge snapshot!
+          if (!syncBase || Number(data.rev || 0) >= syncBase.rev) {
+            recordServerSnapshot(data);
+            if (data.needsRebase) {
+              // Adopt authoritative server baseline first
+              save = normalizeSaveObj(data.save);
+            } else if (localSaveRev === sentRev) {
+              save = normalizeSaveObj(data.save);
+            } else {
+              // Additional clicks happened while request was in flight -> rebase remaining delta cleanly!
+              save = rebaseLocalDeltaOntoServer(data.save, payloadSave, save);
+              syncQueued = true;
+            }
+            writeLocal();
           }
-          writeLocal();
         }
         if ((showFeedback || queuedShowFeedback) && feedbackCb) {
           feedbackCb(true, data.conflictResolved
@@ -401,6 +407,7 @@ export function createCloudStore(onUiRefresh) {
       if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
       syncQueued = false;
       authState = { username: data.username, token: data.token };
+      try { sessionStorage.setItem(SESSION_AUTH_KEY, JSON.stringify(authState)); } catch (_) {}
       try { localStorage.setItem(AUTH_KEY, JSON.stringify(authState)); } catch (_) {}
 
       if (data.save) {
@@ -421,6 +428,7 @@ export function createCloudStore(onUiRefresh) {
     syncQueued = false;
     authState = { username: '', token: '' };
     clearServerSnapshot();
+    try { sessionStorage.setItem(SESSION_AUTH_KEY, ''); } catch (_) {}
     try { localStorage.removeItem(AUTH_KEY); } catch (_) {}
     localSaveRev += 1;
     save = normalizeSaveObj(defaultSave);
@@ -494,6 +502,17 @@ export function createCloudStore(onUiRefresh) {
     });
   }
 
+  function applyAuthoritativePaySnapshot(respData) {
+    if (!respData || !respData.save || !respData.syncSig) return false;
+    if (syncBase && Number(respData.rev || 0) < syncBase.rev) return false;
+    const prevBase = syncBase ? syncBase.save : null;
+    recordServerSnapshot(respData);
+    save = prevBase ? rebaseLocalDeltaOntoServer(respData.save, prevBase, save) : normalizeSaveObj(respData.save);
+    writeLocal();
+    if (onUiRefresh) onUiRefresh();
+    return true;
+  }
+
   return {
     get save() { return save; },
     setSave(next) { save = normalizeSaveObj(next); writeLocal(); },
@@ -504,6 +523,7 @@ export function createCloudStore(onUiRefresh) {
     submitAuth,
     logoutToGuest,
     pullSessionOnBoot,
-    flushBeacon
+    flushBeacon,
+    applyAuthoritativePaySnapshot
   };
 }

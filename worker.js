@@ -440,6 +440,780 @@ async function ensureLeaderboardTable(env) {
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_lb_score ON leaderboard(best_single DESC)').run();
 }
 
+// ==================== CLOUDFLARE D1 ATOMIC ONLINE PARTY RACE ENGINE (v6.9) ====================
+let partyTableInitialized = false;
+const PARTY_COUNTDOWN_MS = 3200;
+const PARTY_ROOM_IDLE_TTL_MS = 15 * 60 * 1000;
+const PARTY_CORE_MODULES = [
+  'ikun_trampoline',
+  'canyon_skyrail',
+  'truck_gauntlet',
+  'wave_coaster',
+  'split_decker',
+  'maodie_ambush',
+  'mega_vault',
+  'narrow_brawl',
+  'turbo_chicane'
+];
+const PARTY_VALID_ITEMS = new Set([
+  'melee_bump',
+  'timed_shield',
+  'ddj_rush',
+  'bean_nitro',
+  'naiwa_swarm',
+  'truck_isekai',
+  'dagou_bite',
+  'bball_rain',
+  'lawyer_seal',
+  'maodie_trap',
+  'pelican_carry',
+  'manbo_steal',
+  'lightning_whip',
+  'kun_rocket',
+  'pan_shield',
+  'hero_skill_hit'
+]);
+const PARTY_ITEM_DAMAGE = {
+  truck_isekai: 50,
+  lightning_whip: 45,
+  naiwa_swarm: 42,
+  dagou_bite: 38,
+  bball_rain: 36,
+  maodie_trap: 34,
+  pelican_carry: 32,
+  manbo_steal: 30,
+  lawyer_seal: 30,
+  melee_bump: 30
+};
+const PARTY_ITEM_BANNERS = {
+  melee_bump: '🐔 遭到对手贴脸铁山靠猛撞！',
+  naiwa_swarm: '🐸 遭到狂笑奶蛙大军砸脸压车！',
+  truck_isekai: '🚛 警报！对手召唤大运泥头车创飞了你！',
+  dagou_bite: '🐕 对手放出巨型大狗嚼死死拽住你后轮！',
+  bball_rain: '🏀 遭到对手燃烧篮球陨石雨轰炸！',
+  lawyer_seal: '📜 遭到对手律师函糊脸警告！',
+  maodie_trap: '😾 遭到圆头耄耋猫群扑脸抓挠！',
+  pelican_carry: '🦢 被对手召唤巨型鹈鹕顺丰强行倒叼半空！',
+  manbo_steal: '🐴 遭到曼波偷速音波袭击！',
+  lightning_whip: '🔔 遭到雷霆少林巨钟当头镇压成铁饼！'
+};
+const PARTY_BOT_PERSONAS = [
+  ['🤖 抽象大帝', 'ikun'],
+  ['🤖 圆头耄耋王', 'hakimi'],
+  ['🤖 背带顺丰王', 'pelican'],
+  ['🤖 狂笑冒牌龙', 'naiwa'],
+  ['🤖 喷火大头王', 'nailong']
+];
+
+async function ensurePartyRoomsTable(env) {
+  if (partyTableInitialized) return;
+  await env.DB.prepare(
+    'CREATE TABLE IF NOT EXISTS party_rooms (room_code TEXT PRIMARY KEY, status TEXT NOT NULL, is_quickmatch INTEGER NOT NULL, rev INTEGER NOT NULL, updated_at INTEGER NOT NULL, state_json TEXT NOT NULL)'
+  ).run();
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_party_qm ON party_rooms(is_quickmatch, status, updated_at)').run();
+  partyTableInitialized = true;
+}
+
+function partyCleanId(rawId) {
+  const s = String(rawId || '').trim().replace(/[^A-Za-z0-9_:-]/g, '').slice(0, 48);
+  return s.length >= 3 ? s : `p_${randomHex(5)}`;
+}
+
+function partyCleanNick(rawNick, fallback = '派对骑手') {
+  const s = String(rawNick || '').trim().replace(/[\r\n\t<>'"\\/;]/g, '').slice(0, 16);
+  return s.length >= 1 ? s : fallback;
+}
+
+function partyCleanHero(rawHero) {
+  const h = String(rawHero || '').trim();
+  return VALID_HEROES.has(h) ? h : 'nailong';
+}
+
+async function resolvePartyAccountKey(env, token, fallbackUser) {
+  if (token) {
+    const row = await env.DB.prepare('SELECT username, display_name FROM players WHERE token = ?').bind(token).first();
+    if (row && row.username) {
+      return {
+        accountKey: `user:${String(row.username).trim().toLowerCase()}`,
+        accountName: String(row.display_name || row.username).trim()
+      };
+    }
+  }
+  const cleanFb = String(fallbackUser || '').trim().replace(/[\s<>'"\\/;]/g, '').slice(0, 20);
+  if (cleanFb.length >= 2) {
+    return { accountKey: `user:${cleanFb.toLowerCase()}`, accountName: cleanFb };
+  }
+  return { accountKey: '', accountName: '' };
+}
+
+function generatePartyModulePlan(trackSeed, raceDist) {
+  let state = ((Number(trackSeed) ^ 0x9e3779b9) >>> 0) || 0x6d2b79f5;
+  const nextRand = () => {
+    state = (Math.imul(1664525, state) + 1013904223) >>> 0;
+    return state;
+  };
+  const midCount = Math.max(3, Math.round(Math.max(510, Number(raceDist) - 300) / 170));
+  const pool = [...PARTY_CORE_MODULES];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = nextRand() % (i + 1);
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const middle = [];
+  while (middle.length < midCount) {
+    for (const modId of pool) {
+      if (middle.length >= midCount) break;
+      if (middle.length && middle[middle.length - 1] === modId) {
+        const alt = pool[(pool.indexOf(modId) + 1) % pool.length];
+        middle.push(alt);
+      } else {
+        middle.push(modId);
+      }
+    }
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = nextRand() % (i + 1);
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+  }
+  return ['start_launchpad', ...middle, 'final_sprint'];
+}
+
+function makePartyPlayerState(playerId, slot, nickname, heroId, nowMs, isBot = false, accountKey = '', accountName = '') {
+  const p = {
+    playerId,
+    slot,
+    nickname,
+    heroId,
+    accountKey,
+    accountName,
+    isBot: Boolean(isBot),
+    x: 120.0,
+    y: 0.0,
+    vx: 0.0,
+    vy: 0.0,
+    dist: 0.0,
+    hp: 100,
+    maxHp: 100,
+    animState: { onGround: true, striking: false, shieldActive: false, rocketActive: false, dizzy: false, clamped: false },
+    shieldUntilMs: 0,
+    shieldConsumedAtMs: 0,
+    oneHitShieldUntilMs: 0,
+    oneHitConsumedAtMs: 0,
+    rocketUntilMs: 0,
+    speech: '',
+    speechUntilMs: 0,
+    itemsUsed: 0,
+    itemsLanded: 0,
+    finishedServerMs: null,
+    finishedClientMs: null,
+    elapsedMs: null,
+    inbox: [],
+    lastSyncMs: nowMs
+  };
+  if (isBot) {
+    p._bot = {
+      lastTickMs: nowMs,
+      nextCrateDist: 70.0,
+      heldItem: '',
+      useItemAtMs: 0,
+      aliveSec: 0.0,
+      koUntilMs: 0,
+      nextHazardCheckM: 95.0,
+      slowUntilMs: 0,
+      slowMult: 1.0,
+      stunUntilMs: 0,
+      clampedUntilMs: 0,
+      boostUntilMs: 0,
+      boostMult: 1.0,
+      hopPhase: 0.0
+    };
+  }
+  return p;
+}
+
+function publicPartyPlayerView(p, nowMs) {
+  if (!p) return null;
+  const anim = (p.animState && typeof p.animState === 'object') ? p.animState : {};
+  const shieldOn = (Number(p.shieldUntilMs || 0) > nowMs)
+    || (Boolean(anim.shieldActive) && (nowMs - Number(p.shieldConsumedAtMs || 0) > 1500));
+  const oneHitOn = (Number(p.oneHitShieldUntilMs || 0) > nowMs)
+    || (Boolean(anim.oneHitShield) && (nowMs - Number(p.oneHitConsumedAtMs || 0) > 1500));
+  const rocketOn = (Number(p.rocketUntilMs || 0) > nowMs) || Boolean(anim.rocketActive);
+  const speech = Number(p.speechUntilMs || 0) > nowMs ? p.speech : '';
+  return {
+    playerId: p.playerId,
+    slot: p.slot,
+    nickname: p.nickname,
+    heroId: p.heroId,
+    isBot: Boolean(p.isBot),
+    x: Math.round(Number(p.x || 120) * 10) / 10,
+    y: Math.round(Number(p.y || 0) * 10) / 10,
+    vx: Math.round(Number(p.vx || 0) * 10) / 10,
+    vy: Math.round(Number(p.vy || 0) * 10) / 10,
+    dist: Math.round(Number(p.dist || 0) * 10) / 10,
+    hp: Number(p.hp ?? 100),
+    animState: anim,
+    shieldActive: shieldOn,
+    oneHitShield: oneHitOn,
+    rocketActive: rocketOn,
+    speech: speech || String(anim.speech || '').slice(0, 32),
+    itemsUsed: Number(p.itemsUsed || 0),
+    itemsLanded: Number(p.itemsLanded || 0),
+    finished: p.finishedServerMs !== null && p.finishedServerMs !== undefined,
+    elapsedMs: p.elapsedMs,
+    staleMs: p.isBot ? 0 : Math.max(0, nowMs - Number(p.lastSyncMs || nowMs))
+  };
+}
+
+function buildPartyRoomResponse(room, callerId, nowMs, drainInbox = false) {
+  const caller = room.players[callerId] || null;
+  let rival = null;
+  for (const [pid, pobj] of Object.entries(room.players)) {
+    if (pid !== callerId) { rival = pobj; break; }
+  }
+  let incoming = [];
+  if (caller && drainInbox && Array.isArray(caller.inbox) && caller.inbox.length) {
+    incoming = [...caller.inbox];
+    caller.inbox = [];
+  }
+  const activeTraps = (room.trackTraps || []).filter((t) => t && t.active);
+  return {
+    ok: true,
+    roomCode: room.roomCode,
+    status: room.status,
+    isQuickmatch: Boolean(room.isQuickmatch),
+    raceDist: room.raceDist,
+    trackSeed: room.trackSeed,
+    modulePlan: room.modulePlan,
+    startAtMs: room.startAtMs,
+    serverNowMs: nowMs,
+    you: publicPartyPlayerView(caller, nowMs),
+    rival: publicPartyPlayerView(rival, nowMs),
+    incomingEvents: incoming,
+    trackTraps: activeTraps,
+    results: room.results || [],
+    rematchVotes: Array.isArray(room.rematchVotes) ? [...room.rematchVotes].sort() : [],
+    playerCount: Object.keys(room.players).length
+  };
+}
+
+function forfeitPartyPlayer(room, quitterId, reason, nowMs) {
+  room.isQuickmatch = false;
+  const quitter = room.players[quitterId];
+  const otherHumans = Object.values(room.players).filter((p) => p.playerId !== quitterId && !p.isBot);
+  if ((room.status === 'countdown' || room.status === 'racing') && otherHumans.length && quitter) {
+    const survivor = otherHumans[0];
+    const oldNick = quitter.nickname || '对手';
+    const startRef = Number(room.startAtMs || room.createdAtMs || nowMs);
+    const elapsed = Math.max(1000, nowMs - startRef);
+    survivor.finishedServerMs = nowMs;
+    survivor.finishedClientMs = nowMs;
+    survivor.elapsedMs = elapsed;
+    room.status = 'finished';
+    room.results = [
+      {
+        place: 1,
+        title: '🥇 对手退赛判胜',
+        rewardBeans: 500,
+        playerId: survivor.playerId,
+        nickname: survivor.nickname,
+        heroId: survivor.heroId,
+        isBot: false,
+        dist: Math.round(Number(survivor.dist || 0) * 10) / 10,
+        elapsedMs: elapsed,
+        finishedServerMs: nowMs,
+        itemsLanded: Number(survivor.itemsLanded || 0),
+        itemsUsed: Number(survivor.itemsUsed || 0),
+        forfeited: false
+      },
+      {
+        place: 2,
+        title: reason === 'disconnect' ? '📡 掉线判负' : '🏳️ 中途退赛',
+        rewardBeans: 0,
+        playerId: quitter.playerId,
+        nickname: oldNick,
+        heroId: quitter.heroId,
+        isBot: Boolean(quitter.isBot),
+        dist: Math.round(Number(quitter.dist || 0) * 10) / 10,
+        elapsedMs: null,
+        finishedServerMs: nowMs,
+        itemsLanded: Number(quitter.itemsLanded || 0),
+        itemsUsed: Number(quitter.itemsUsed || 0),
+        forfeited: true,
+        forfeitReason: reason
+      }
+    ];
+    delete room.players[quitterId];
+    room.rematchVotes = (room.rematchVotes || []).filter((v) => v !== quitterId);
+    survivor.inbox = survivor.inbox || [];
+    survivor.inbox.push({
+      eventId: `forfeit_${quitterId}_${nowMs}`,
+      type: 'rival_forfeit_win',
+      fromNick: oldNick,
+      reason
+    });
+    room.updatedAtMs = nowMs;
+    return false;
+  }
+  delete room.players[quitterId];
+  room.rematchVotes = (room.rematchVotes || []).filter((v) => v !== quitterId);
+  const humansLeft = Object.values(room.players).filter((p) => !p.isBot);
+  return humansLeft.length === 0;
+}
+
+function recomputePartyResults(room, nowMs) {
+  const finishedPlayers = Object.values(room.players).filter((p) => p.finishedServerMs !== null && p.finishedServerMs !== undefined);
+  finishedPlayers.sort(
+    (a, b) => Number(a.finishedServerMs) - Number(b.finishedServerMs)
+      || Number(a.finishedClientMs || a.finishedServerMs) - Number(b.finishedClientMs || b.finishedServerMs)
+  );
+  room.results = finishedPlayers.map((fp, idx) => {
+    const place = idx + 1;
+    return {
+      place,
+      title: place === 1 ? '🥇 冠军梗王' : '🥈 惜败乐子人',
+      rewardBeans: place === 1 ? 500 : 200,
+      playerId: fp.playerId,
+      nickname: fp.nickname,
+      heroId: fp.heroId,
+      isBot: Boolean(fp.isBot),
+      dist: Math.round(Number(fp.dist || room.raceDist) * 10) / 10,
+      elapsedMs: Number(fp.elapsedMs || Math.max(1000, Number(fp.finishedServerMs) - Number(room.startAtMs || room.createdAtMs))),
+      finishedServerMs: Number(fp.finishedServerMs),
+      itemsLanded: Number(fp.itemsLanded || 0),
+      itemsUsed: Number(fp.itemsUsed || 0)
+    };
+  });
+  const totalPlayers = Object.keys(room.players).length;
+  if (totalPlayers >= 2 && finishedPlayers.length >= totalPlayers) {
+    room.status = 'finished';
+  } else if (finishedPlayers.length >= 1) {
+    const firstMs = Number(finishedPlayers[0].finishedServerMs);
+    if (nowMs - firstMs >= 16000) {
+      for (const up of Object.values(room.players)) {
+        if (up.finishedServerMs === null || up.finishedServerMs === undefined) {
+          up.finishedServerMs = nowMs;
+          up.elapsedMs = Math.max(1000, nowMs - Number(room.startAtMs || room.createdAtMs));
+        }
+      }
+      recomputePartyResults(room, nowMs);
+    }
+  }
+}
+
+function applyOffensiveHitToBot(botP, itemId, nowMs, reflected = false) {
+  const bs = botP._bot;
+  if (!bs) return;
+  if (itemId === 'bball_rain') {
+    bs.slowUntilMs = Math.max(bs.slowUntilMs, nowMs + 2600);
+    bs.slowMult = 0.62;
+    botP.speech = !reflected ? '🏀 哎哟我的中分头！' : '🥘 被自己篮球砸中了！';
+  } else if (itemId === 'lawyer_seal') {
+    bs.slowUntilMs = Math.max(bs.slowUntilMs, nowMs + 3000);
+    bs.slowMult = Math.min(bs.slowUntilMs > nowMs ? bs.slowMult : 1.0, 0.80);
+    botP.speech = '📜 律师函糊脸看不见路！';
+  } else if (itemId === 'pelican_carry') {
+    bs.clampedUntilMs = Math.max(bs.clampedUntilMs, nowMs + 1300);
+    botP.speech = '🦢 救命！被鹈鹕叼走了！';
+  } else if (itemId === 'manbo_steal') {
+    bs.slowUntilMs = Math.max(bs.slowUntilMs, nowMs + 3200);
+    bs.slowMult = 0.72;
+    botP.speech = '🐴 曼波把我的车速偷了！';
+  } else if (itemId === 'maodie_trap') {
+    bs.slowUntilMs = Math.max(bs.slowUntilMs, nowMs + 2400);
+    bs.slowMult = 0.55;
+    botP.speech = '😾 哎哟被耄耋扑脸！';
+  } else if (itemId === 'naiwa_swarm') {
+    bs.slowUntilMs = Math.max(bs.slowUntilMs, nowMs + 2600);
+    bs.slowMult = 0.44;
+    botP.speech = '🐸 救命满脸都是冒牌奶蛙！';
+  } else if (itemId === 'truck_isekai') {
+    bs.stunUntilMs = Math.max(bs.stunUntilMs, nowMs + 1250);
+    botP.speech = '🚛 哇啊被泥头车创飞了！';
+  } else if (itemId === 'dagou_bite') {
+    bs.slowUntilMs = Math.max(bs.slowUntilMs, nowMs + 2300);
+    bs.slowMult = 0.40;
+    botP.speech = '🐕 别咬我车屁股啊大狗嚼！';
+  } else if (itemId === 'melee_bump') {
+    bs.slowUntilMs = Math.max(bs.slowUntilMs, nowMs + 1200);
+    bs.slowMult = 0.52;
+    botP.speech = '🐔 哎哟贴脸铁山靠！';
+  } else if (itemId === 'lightning_whip') {
+    bs.stunUntilMs = Math.max(bs.stunUntilMs, nowMs + 1150);
+    botP.speech = '🔔 哎哟大铜钟扣头上了！';
+  }
+  botP.speechUntilMs = nowMs + 1800;
+}
+
+function processPartyItemEvent(room, caller, rival, evt, nowMs) {
+  if (!evt || typeof evt !== 'object') return;
+  const rawEid = String(evt.eventId || '').trim().slice(0, 80);
+  const eventId = rawEid.replace(/[^A-Za-z0-9_:-]/g, '') || `evt_${caller.playerId}_${nowMs}_${(room.processedEventIds || []).length}`;
+  room.processedEventIds = room.processedEventIds || [];
+  if (room.processedEventIds.includes(eventId)) return;
+  room.processedEventIds.push(eventId);
+  if (room.processedEventIds.length > 400) room.processedEventIds = room.processedEventIds.slice(-250);
+
+  const itemId = String(evt.itemId || '').trim();
+  if (!PARTY_VALID_ITEMS.has(itemId)) return;
+
+  caller.itemsUsed = Number(caller.itemsUsed || 0) + 1;
+  caller.speech = '';
+  caller.speechUntilMs = 0;
+
+  if (itemId === 'timed_shield') {
+    caller.oneHitShieldUntilMs = nowMs + 7000;
+    caller.oneHitConsumedAtMs = 0;
+    return;
+  }
+  if (itemId === 'pan_shield') {
+    caller.shieldUntilMs = nowMs + 4500;
+    caller.shieldConsumedAtMs = 0;
+    return;
+  }
+  if (itemId === 'kun_rocket') {
+    caller.rocketUntilMs = nowMs + 3000;
+    if (caller.isBot && caller._bot) {
+      caller._bot.boostUntilMs = nowMs + 3000;
+      caller._bot.boostMult = 2.05;
+    }
+    if (rival && !rival.isBot) {
+      rival.inbox.push({ eventId: `${eventId}_cast_notice`, type: 'rival_boost_notice', itemId, fromNick: caller.nickname });
+    }
+    return;
+  }
+  if (itemId === 'ddj_rush') {
+    caller.rocketUntilMs = Math.max(Number(caller.rocketUntilMs || 0), nowMs + 1450);
+    if (caller.isBot && caller._bot) {
+      caller._bot.boostUntilMs = Math.max(caller._bot.boostUntilMs, nowMs + 1450);
+      caller._bot.boostMult = 1.82;
+    }
+    return;
+  }
+  if (itemId === 'bean_nitro') {
+    caller.rocketUntilMs = Math.max(Number(caller.rocketUntilMs || 0), nowMs + 2650);
+    if (caller.isBot && caller._bot) {
+      caller._bot.boostUntilMs = Math.max(caller._bot.boostUntilMs, nowMs + 2650);
+      caller._bot.boostMult = 1.54;
+    }
+    return;
+  }
+
+  if (itemId === 'hero_skill_hit') {
+    if (!rival) return;
+    const rAnim = (rival.animState && typeof rival.animState === 'object') ? rival.animState : {};
+    const rOneHit = (Number(rival.oneHitShieldUntilMs || 0) > nowMs)
+      || (Boolean(rAnim.oneHitShield) && (nowMs - Number(rival.oneHitConsumedAtMs || 0) > 1500));
+    if (rOneHit) {
+      rival.oneHitShieldUntilMs = 0;
+      rival.oneHitConsumedAtMs = nowMs;
+      if (rival.animState) rival.animState.oneHitShield = false;
+      if (!rival.isBot) rival.inbox.push({ eventId: `${eventId}_skblk`, type: 'one_hit_shield_block', itemId: 'melee_bump' });
+      if (!caller.isBot) caller.inbox.push({ eventId: `${eventId}_skblk_ack`, type: 'attack_blocked_ack', itemId: 'melee_bump' });
+      return;
+    }
+    const dmg = Math.min(45, Math.max(16, Math.floor(Number(evt.dmg) || 30)));
+    const curHp = Number(rival.hp ?? 100) - dmg;
+    if (curHp <= 0) {
+      rival.hp = 100;
+      caller.itemsLanded = Number(caller.itemsLanded || 0) + 1;
+      if (rival.isBot && rival._bot) {
+        rival._bot.koUntilMs = nowMs + 2400;
+        rival._bot.aliveSec = 0;
+        rival.speech = '💀 被技能击毙！速度归零重跑！';
+        rival.speechUntilMs = nowMs + 2200;
+      } else if (!rival.isBot) {
+        rival.inbox.push({ eventId: `${eventId}_ko_v`, type: 'hero_ko_victim', fromNick: caller.nickname });
+      }
+      if (!caller.isBot) caller.inbox.push({ eventId: `${eventId}_ko_k`, type: 'hero_ko_killer', targetNick: rival.nickname });
+    } else {
+      rival.hp = curHp;
+      if (!rival.isBot) rival.inbox.push({ eventId: `${eventId}_skhurt`, type: 'hero_skill_hurt', dmg, fromNick: caller.nickname });
+      if (!caller.isBot) caller.inbox.push({ eventId: `${eventId}_skack`, type: 'hero_skill_ack', dmg, rivalHp: curHp });
+    }
+    return;
+  }
+
+  if (caller.isBot && caller._bot) {
+    const bs = caller._bot;
+    if (itemId === 'pelican_carry') { bs.boostUntilMs = Math.max(bs.boostUntilMs, nowMs + 2500); bs.boostMult = 1.45; }
+    else if (itemId === 'manbo_steal') { bs.boostUntilMs = Math.max(bs.boostUntilMs, nowMs + 3200); bs.boostMult = 1.34; }
+    else if (itemId === 'lightning_whip') { bs.boostUntilMs = Math.max(bs.boostUntilMs, nowMs + 1450); bs.boostMult = 1.68; }
+  }
+  if (!rival) return;
+
+  const rAnim = (rival.animState && typeof rival.animState === 'object') ? rival.animState : {};
+  const rivalShielded = (Number(rival.shieldUntilMs || 0) > nowMs)
+    || (Boolean(rAnim.shieldActive) && (nowMs - Number(rival.shieldConsumedAtMs || 0) > 1500));
+  if (rivalShielded) {
+    rival.shieldUntilMs = 0;
+    rival.shieldConsumedAtMs = nowMs;
+    if (rival.animState) rival.animState.shieldActive = false;
+    rival.itemsLanded = Number(rival.itemsLanded || 0) + 1;
+    rival.speech = '🥘 铁锅反弹！露出鸡脚了吧！';
+    rival.speechUntilMs = nowMs + 2600;
+    if (!rival.isBot) {
+      rival.inbox.push({
+        eventId: `${eventId}_shield_win`,
+        type: 'shield_reflect_win',
+        itemId,
+        fromId: caller.playerId,
+        fromNick: caller.nickname,
+        reflected: true
+      });
+    }
+    if (caller.isBot) applyOffensiveHitToBot(caller, itemId, nowMs, true);
+    else {
+      caller.inbox.push({
+        eventId: `${eventId}_reflected`,
+        type: 'attack',
+        itemId,
+        fromId: rival.playerId,
+        fromNick: rival.nickname,
+        targetId: caller.playerId,
+        reflected: true
+      });
+    }
+    return;
+  }
+
+  const rivalOneHit = (Number(rival.oneHitShieldUntilMs || 0) > nowMs)
+    || (Boolean(rAnim.oneHitShield) && (nowMs - Number(rival.oneHitConsumedAtMs || 0) > 1500));
+  if (rivalOneHit) {
+    rival.oneHitShieldUntilMs = 0;
+    rival.oneHitConsumedAtMs = nowMs;
+    if (rival.animState) rival.animState.oneHitShield = false;
+    if (!rival.isBot) rival.inbox.push({ eventId: `${eventId}_onehit_block`, type: 'one_hit_shield_block', itemId, fromId: caller.playerId, fromNick: caller.nickname });
+    if (!caller.isBot) caller.inbox.push({ eventId: `${eventId}_blk_ack`, type: 'attack_blocked_ack', itemId, targetNick: rival.nickname });
+    return;
+  }
+
+  caller.itemsLanded = Number(caller.itemsLanded || 0) + 1;
+  const itemDmg = Number(PARTY_ITEM_DAMAGE[itemId] || 35);
+  const nextHp = Number(rival.hp ?? 100) - itemDmg;
+  const lethalKo = nextHp <= 0;
+  rival.hp = lethalKo ? 100 : nextHp;
+  if (!caller.isBot) {
+    caller.inbox.push({
+      eventId: `${eventId}_hit_ack`,
+      type: 'attack_hit_confirm',
+      itemId,
+      dmg: itemDmg,
+      lethalKo,
+      targetNick: rival.nickname,
+      comboHits: caller.itemsLanded
+    });
+  }
+  if (rival.isBot) {
+    applyOffensiveHitToBot(rival, itemId, nowMs, false);
+    if (lethalKo && rival._bot) {
+      rival._bot.koUntilMs = nowMs + 2400;
+      rival._bot.aliveSec = 0;
+      rival.speech = '💀 血条被打空！速度归零！';
+      rival.speechUntilMs = nowMs + 2200;
+    }
+  } else {
+    rival.inbox.push({
+      eventId,
+      type: 'attack',
+      itemId,
+      dmg: itemDmg,
+      lethalKo,
+      fromId: caller.playerId,
+      fromNick: caller.nickname,
+      targetId: rival.playerId,
+      reflected: false,
+      banner: PARTY_ITEM_BANNERS[itemId] || '💥 遭到对手梗道具袭击！'
+    });
+  }
+}
+
+function tickPartyBot(room, botP, humanP, nowMs) {
+  const bs = botP._bot;
+  if (!bs) return;
+  const prevMs = Number(bs.lastTickMs || nowMs);
+  bs.lastTickMs = nowMs;
+  if (room.status !== 'countdown' && room.status !== 'racing') return;
+  const startAt = Number(room.startAtMs || nowMs);
+  if (nowMs < startAt) {
+    botP.x = 120; botP.dist = 0; botP.vx = 0;
+    return;
+  }
+  if (room.status === 'countdown') room.status = 'racing';
+  if (botP.finishedServerMs !== null && botP.finishedServerMs !== undefined) {
+    botP.vx = 0;
+    return;
+  }
+  const dt = Math.min(0.25, Math.max(0, (nowMs - prevMs) / 1000));
+  if (dt <= 0.0001) return;
+
+  const humanDist = humanP ? Number(humanP.dist || 0) : 0;
+  const botDist = Number(botP.dist || 0);
+  const gapM = humanDist - botDist;
+  const rocketOn = nowMs < Number(botP.rocketUntilMs || 0);
+  const shieldOn = nowMs < Number(botP.shieldUntilMs || 0);
+  let koCrawling = nowMs < Number(bs.koUntilMs || 0);
+
+  if (koCrawling) bs.aliveSec = 0;
+  else bs.aliveSec = Math.min(40.0, Number(bs.aliveSec || 0) + dt);
+  const botAliveMult = 1.0 + Math.min(1.0, Number(bs.aliveSec) / 40.0);
+
+  if (botP.dist >= Number(bs.nextHazardCheckM || 95)) {
+    bs.nextHazardCheckM = botP.dist + 115;
+    if (gapM < -24 && (nowMs % 5 === 0) && !rocketOn) {
+      botP.hp = Math.max(0, Number(botP.hp ?? 100) - 38);
+      if (botP.hp <= 0) {
+        botP.hp = 100;
+        bs.koUntilMs = nowMs + 2200;
+        bs.aliveSec = 0;
+        koCrawling = true;
+        botP.speech = '💥 撞障翻车！加速归零！';
+        botP.speechUntilMs = nowMs + 1800;
+      }
+    }
+  }
+
+  let baseSpd = 365 * botAliveMult;
+  if (gapM > 16) baseSpd *= Math.min(1.36, 1 + (gapM - 16) * 0.011);
+  else if (gapM < -20) baseSpd *= Math.max(0.76, 1 + (gapM + 20) * 0.009);
+
+  const clamped = nowMs < Number(bs.clampedUntilMs || 0);
+  const stunned = nowMs < Number(bs.stunUntilMs || 0);
+  let spd = baseSpd;
+  if (koCrawling) spd = 58;
+  else if (stunned) spd = 65;
+  else if (clamped) spd = 95;
+  else {
+    if (nowMs < Number(bs.boostUntilMs || 0)) spd *= Number(bs.boostMult || 1.35);
+    if (!rocketOn && nowMs < Number(bs.slowUntilMs || 0)) spd *= Number(bs.slowMult || 0.65);
+  }
+
+  if (humanP) {
+    const hx = Number(humanP.x || 120);
+    const dxPx = hx - Number(botP.x || 120);
+    const absDx = Math.abs(dxPx);
+    if (absDx > 150) {
+      const pullV = Math.min(72, (absDx - 150) * 0.065);
+      if (dxPx > 0) spd += pullV;
+      else spd = Math.max(145, spd - pullV * (rocketOn ? 0.16 : 0.48));
+    }
+  }
+
+  botP.vx = spd;
+  botP.x += spd * dt;
+  botP.dist = Math.max(0, (botP.x - 120) / 18);
+
+  bs.hopPhase = (Number(bs.hopPhase || 0) + dt * 1.9) % (Math.PI * 2);
+  const hopSin = Math.sin(bs.hopPhase);
+  const inAir = hopSin > 0.58 || clamped;
+  const hopLift = clamped ? -95 : (inAir ? -Math.max(0, (hopSin - 0.58) / 0.42) * 86 : 0);
+  const tWave = Math.max(0, botP.x - 380) * 0.0016;
+  const roadY = Math.sin(tWave) * 20 + Math.sin(tWave * 2.1 + 1.1) * 9;
+  botP.y = roadY + hopLift;
+  botP.vy = inAir ? -220 : 0;
+  botP.animState = {
+    onGround: !inAir,
+    striking: (Math.floor(nowMs / 220) % 13 === 0) && !stunned,
+    shieldActive: shieldOn,
+    rocketActive: rocketOn,
+    koCrawl: koCrawling,
+    dizzy: stunned || (nowMs < Number(bs.slowUntilMs || 0) && Number(bs.slowMult || 1) <= 0.58),
+    clamped
+  };
+
+  if (botP.dist >= Number(bs.nextCrateDist || 75) && botP.dist < Number(room.raceDist) - 45) {
+    bs.nextCrateDist = botP.dist + 160 + ((nowMs % 5) * 14);
+    if (!bs.heldItem) {
+      const choices = gapM > 18
+        ? ['truck_isekai', 'naiwa_swarm', 'dagou_bite', 'pelican_carry', 'kun_rocket', 'ddj_rush', 'lightning_whip']
+        : ['naiwa_swarm', 'truck_isekai', 'dagou_bite', 'bball_rain', 'maodie_trap', 'timed_shield', 'ddj_rush', 'bean_nitro', 'pan_shield', 'manbo_steal'];
+      bs.heldItem = choices[Math.floor(nowMs / 97) % choices.length];
+      bs.useItemAtMs = nowMs + 1500 + (nowMs % 1300);
+    }
+  }
+  if (bs.heldItem && nowMs >= Number(bs.useItemAtMs || 0) && !stunned && !clamped) {
+    const chosen = bs.heldItem;
+    bs.heldItem = '';
+    processPartyItemEvent(room, botP, humanP, { eventId: `bot_evt_${room.roomCode}_${nowMs}`, itemId: chosen }, nowMs);
+  }
+  if (botP.dist >= Number(room.raceDist) && (botP.finishedServerMs === null || botP.finishedServerMs === undefined)) {
+    botP.dist = Number(room.raceDist);
+    botP.x = 120 + Number(room.raceDist) * 18;
+    botP.finishedServerMs = nowMs;
+    botP.finishedClientMs = nowMs;
+    botP.elapsedMs = Math.max(1000, nowMs - startAt);
+    recomputePartyResults(room, nowMs);
+  }
+}
+
+async function prunePartyRoomsD1(env, nowMs) {
+  await ensurePartyRoomsTable(env);
+  await env.DB.prepare('DELETE FROM party_rooms WHERE updated_at < ? OR (status = ? AND updated_at < ?)')
+    .bind(nowMs - PARTY_ROOM_IDLE_TTL_MS, 'waiting', nowMs - 8500).run();
+}
+
+async function createPartyRoomD1(env, playerId, nickname, heroId, raceDist, nowMs, isQuickmatch, accountKey, accountName) {
+  await prunePartyRoomsD1(env, nowMs);
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const randArr = new Uint32Array(2);
+    crypto.getRandomValues(randArr);
+    const roomCode = String((randArr[0] % 9000) + 1000);
+    const trackSeed = (randArr[1] % 1900000000) + 100000;
+    const modulePlan = generatePartyModulePlan(trackSeed, raceDist);
+    const p1 = makePartyPlayerState(playerId, 1, nickname, heroId, nowMs, false, accountKey, accountName);
+    const room = {
+      roomCode,
+      hostId: playerId,
+      status: 'waiting',
+      isQuickmatch: Boolean(isQuickmatch),
+      raceDist,
+      trackSeed,
+      modulePlan,
+      createdAtMs: nowMs,
+      updatedAtMs: nowMs,
+      startAtMs: null,
+      players: { [playerId]: p1 },
+      processedEventIds: [],
+      trackTraps: [],
+      results: [],
+      rematchVotes: []
+    };
+    const res = await env.DB.prepare(
+      'INSERT OR IGNORE INTO party_rooms (room_code, status, is_quickmatch, rev, updated_at, state_json) VALUES (?, ?, ?, 1, ?, ?)'
+    ).bind(roomCode, 'waiting', isQuickmatch ? 1 : 0, nowMs, JSON.stringify(room)).run();
+    if (res.meta && res.meta.changes > 0) return room;
+  }
+  throw new Error('Room allocation busy');
+}
+
+async function mutatePartyRoomCAS(env, roomCode, nowMs, mutatorFn) {
+  await ensurePartyRoomsTable(env);
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const row = await env.DB.prepare('SELECT rev, state_json FROM party_rooms WHERE room_code = ?').bind(roomCode).first();
+    if (!row) return { notFound: true };
+    const rev = Number(row.rev || 1);
+    const room = JSON.parse(row.state_json);
+    const outcome = mutatorFn(room, nowMs);
+    if (outcome && outcome.abortResp) return outcome;
+    if (outcome && outcome.deleteRoom) {
+      await env.DB.prepare('DELETE FROM party_rooms WHERE room_code = ?').bind(roomCode).run();
+      return outcome;
+    }
+    const upd = await env.DB.prepare(
+      'UPDATE party_rooms SET status = ?, is_quickmatch = ?, rev = ?, updated_at = ?, state_json = ? WHERE room_code = ? AND rev = ?'
+    ).bind(
+      room.status,
+      room.isQuickmatch && room.status === 'waiting' ? 1 : 0,
+      rev + 1,
+      nowMs,
+      JSON.stringify(room),
+      roomCode,
+      rev
+    ).run();
+    if (upd.meta && upd.meta.changes > 0) return { room, ...outcome };
+  }
+  return { conflict: true };
+}
+
 async function upsertLeaderboardEntry(env, playerKey, nickname, hero, bestSingle, nowMs) {
   const cleanScore = Math.min(25000, Math.max(0, Math.floor(Number(bestSingle) || 0)));
   if (!playerKey || cleanScore < 5) return;
@@ -702,6 +1476,351 @@ export default {
       return jsonResp({ ok: true, playerKey: pkey, nickname: nick, bestSingle: bestNow, myRank: Number(hRow?.cnt || 0) + 1 });
     }
 
+    // ==================== ONLINE MULTIPLAYER PARTY RACE ENDPOINTS (D1 CAS) ====================
+    if (path === '/api/party/room' && request.method === 'GET') {
+      const rcode = String(url.searchParams.get('roomCode') || '').replace(/[^0-9]/g, '').slice(0, 6);
+      const pid = partyCleanId(url.searchParams.get('playerId') || '');
+      const qsHero = String(url.searchParams.get('heroId') || '').trim();
+      const now = Date.now();
+      await prunePartyRoomsD1(env, now);
+      if (rcode.length !== 4) return jsonResp({ ok: false, error: '房间不存在或已过期' }, 404);
+      const res = await mutatePartyRoomCAS(env, rcode, now, (room, nowMs) => {
+        if (room.players[pid]) {
+          room.players[pid].lastSyncMs = nowMs;
+          room.updatedAtMs = nowMs;
+          if (VALID_HEROES.has(qsHero) && (room.status === 'waiting' || room.status === 'finished')) {
+            room.players[pid].heroId = qsHero;
+          }
+        }
+        if (room.status === 'finished') {
+          for (const [opId, opObj] of Object.entries(room.players)) {
+            if (opId !== pid && !opObj.isBot && (nowMs - Number(opObj.lastSyncMs || nowMs)) > 8500) {
+              const del = forfeitPartyPlayer(room, opId, 'disconnect', nowMs);
+              if (del) return { deleteRoom: true };
+            }
+          }
+        }
+        return {};
+      });
+      if (res.notFound || res.deleteRoom || !res.room) {
+        return jsonResp({ ok: false, error: '房间不存在或已过期' }, 404);
+      }
+      return jsonResp(buildPartyRoomResponse(res.room, pid, now, false));
+    }
+
+    if (path.startsWith('/api/party/') && request.method === 'POST') {
+      const parsed = await readSafeJson(request, 8192);
+      if (parsed.err) return jsonResp({ ok: false, error: parsed.err }, parsed.status);
+      const body = parsed.body || {};
+      const now = Date.now();
+
+      if (path === '/api/party/create') {
+        const pid = partyCleanId(body.playerId);
+        const nick = partyCleanNick(body.nickname, '派对房主');
+        const hero = partyCleanHero(body.heroId);
+        const { accountKey, accountName } = await resolvePartyAccountKey(env, extractToken(request, body), body.authUser || '');
+        const raceDist = Math.min(5000, Math.max(1200, Math.floor(Number(body.raceDist) || 3500)));
+        const room = await createPartyRoomD1(env, pid, nick, hero, raceDist, now, false, accountKey, accountName);
+        return jsonResp(buildPartyRoomResponse(room, pid, now, false));
+      }
+
+      if (path === '/api/party/set_hero') {
+        const rcode = String(body.roomCode || '').replace(/[^0-9]/g, '').slice(0, 6);
+        const pid = partyCleanId(body.playerId);
+        const hero = partyCleanHero(body.heroId);
+        const res = await mutatePartyRoomCAS(env, rcode, now, (room, nowMs) => {
+          if (!room.players[pid]) return { abortResp: jsonResp({ ok: false, error: '房间不存在或已过期' }, 404) };
+          if (room.status === 'waiting' || room.status === 'finished') {
+            room.players[pid].heroId = hero;
+            if (body.nickname) room.players[pid].nickname = partyCleanNick(body.nickname, room.players[pid].nickname);
+            room.players[pid].lastSyncMs = nowMs;
+            room.updatedAtMs = nowMs;
+          }
+          return {};
+        });
+        if (res.abortResp) return res.abortResp;
+        if (res.notFound || !res.room) return jsonResp({ ok: false, error: '房间不存在或已过期' }, 404);
+        return jsonResp(buildPartyRoomResponse(res.room, pid, now, false));
+      }
+
+      if (path === '/api/party/join') {
+        const rcode = String(body.roomCode || '').replace(/[^0-9]/g, '').slice(0, 6);
+        const pid = partyCleanId(body.playerId);
+        const nick = partyCleanNick(body.nickname, '挑战骑手');
+        const hero = partyCleanHero(body.heroId);
+        if (rcode.length !== 4) return jsonResp({ ok: false, error: '请输入正确的 4 位数字房间号！' }, 400);
+        const { accountKey, accountName } = await resolvePartyAccountKey(env, extractToken(request, body), body.authUser || '');
+        await prunePartyRoomsD1(env, now);
+
+        const res = await mutatePartyRoomCAS(env, rcode, now, (room, nowMs) => {
+          if (room.players[pid]) {
+            if (room.status === 'waiting') {
+              room.players[pid].nickname = nick;
+              room.players[pid].heroId = hero;
+            }
+            room.players[pid].lastSyncMs = nowMs;
+            room.updatedAtMs = nowMs;
+            return {};
+          }
+          if (accountKey && Object.values(room.players).some((op) => !op.isBot && op.accountKey === accountKey)) {
+            return {
+              abortResp: jsonResp({ ok: false, error: `不能用相同账号【${accountName || nick}】同房互匹！请在另一窗口切换其他账号登录` }, 409)
+            };
+          }
+          if (Object.keys(room.players).length >= 2) {
+            return { abortResp: jsonResp({ ok: false, error: '该房间已满员 (2/2)，请创建新房间或使用快速匹配！' }, 409) };
+          }
+          room.players[pid] = makePartyPlayerState(pid, 2, nick, hero, nowMs, false, accountKey, accountName);
+          room.status = 'countdown';
+          room.isQuickmatch = false;
+          room.startAtMs = nowMs + PARTY_COUNTDOWN_MS;
+          room.updatedAtMs = nowMs;
+          return {};
+        });
+        if (res.abortResp) return res.abortResp;
+        if (res.notFound || !res.room) return jsonResp({ ok: false, error: '房间号不存在或已过期，请核对 4 位房间码！' }, 404);
+        return jsonResp(buildPartyRoomResponse(res.room, pid, now, false));
+      }
+
+      if (path === '/api/party/quickmatch') {
+        const pid = partyCleanId(body.playerId);
+        const nick = partyCleanNick(body.nickname, '派对骑手');
+        const hero = partyCleanHero(body.heroId);
+        const raceDist = Math.min(5000, Math.max(1200, Math.floor(Number(body.raceDist) || 3500)));
+        const { accountKey, accountName } = await resolvePartyAccountKey(env, extractToken(request, body), body.authUser || '');
+        await prunePartyRoomsD1(env, now);
+
+        const openRows = await env.DB.prepare(
+          'SELECT room_code, state_json FROM party_rooms WHERE is_quickmatch = 1 AND status = ? ORDER BY updated_at ASC LIMIT 12'
+        ).bind('waiting').all();
+
+        for (const qr of (openRows.results || [])) {
+          let qrm = null;
+          try { qrm = JSON.parse(qr.state_json); } catch (_) {}
+          if (!qrm || qrm.status !== 'waiting') continue;
+          if (qrm.players[pid] && Object.keys(qrm.players).length === 1) {
+            const reuse = await mutatePartyRoomCAS(env, qr.room_code, now, (room, nowMs) => {
+              if (!room.players[pid] || Object.keys(room.players).length !== 1) return { abortResp: true };
+              room.players[pid].nickname = nick;
+              room.players[pid].heroId = hero;
+              room.players[pid].lastSyncMs = nowMs;
+              room.updatedAtMs = nowMs;
+              return {};
+            });
+            if (reuse.room) {
+              const out = buildPartyRoomResponse(reuse.room, pid, now, false);
+              out.matched = false;
+              return jsonResp(out);
+            }
+          }
+          if (accountKey && !qrm.players[pid] && Object.values(qrm.players).some((op) => !op.isBot && op.accountKey === accountKey)) {
+            return jsonResp({ ok: false, error: `账号【${accountName || nick}】已在另一窗口匹配中，不能同号互匹！请切换其他账号登录` }, 409);
+          }
+        }
+
+        for (const qr of (openRows.results || [])) {
+          const claim = await mutatePartyRoomCAS(env, qr.room_code, now, (room, nowMs) => {
+            if (room.status !== 'waiting' || Object.keys(room.players).length !== 1 || room.players[pid]) {
+              return { abortResp: true };
+            }
+            if (accountKey && Object.values(room.players).some((op) => !op.isBot && op.accountKey === accountKey)) {
+              return { abortResp: true };
+            }
+            room.players[pid] = makePartyPlayerState(pid, 2, nick, hero, nowMs, false, accountKey, accountName);
+            room.status = 'countdown';
+            room.isQuickmatch = false;
+            room.startAtMs = nowMs + PARTY_COUNTDOWN_MS;
+            room.updatedAtMs = nowMs;
+            return {};
+          });
+          if (claim.room) {
+            const out = buildPartyRoomResponse(claim.room, pid, now, false);
+            out.matched = true;
+            return jsonResp(out);
+          }
+        }
+
+        const created = await createPartyRoomD1(env, pid, nick, hero, raceDist, now, true, accountKey, accountName);
+        const out = buildPartyRoomResponse(created, pid, now, false);
+        out.matched = false;
+        return jsonResp(out);
+      }
+
+      if (path === '/api/party/add_bot') {
+        const rcode = String(body.roomCode || '').replace(/[^0-9]/g, '').slice(0, 6);
+        const pid = partyCleanId(body.playerId);
+        const res = await mutatePartyRoomCAS(env, rcode, now, (room, nowMs) => {
+          if (!room.players[pid]) return { abortResp: jsonResp({ ok: false, error: '无权操作此房间' }, 403) };
+          if (Object.keys(room.players).length >= 2) {
+            if (Object.values(room.players).some((p) => p.isBot)) return {};
+            return { abortResp: jsonResp({ ok: false, error: '真人劲敌已就位，马上发车！' }, 409) };
+          }
+          const hostHero = room.players[pid].heroId;
+          const cands = PARTY_BOT_PERSONAS.filter((bp) => bp[1] !== hostHero);
+          const pickPool = cands.length ? cands : PARTY_BOT_PERSONAS;
+          const [botNick, botHero] = pickPool[(Number(rcode) + nowMs) % pickPool.length];
+          const botId = `bot_${rcode}`;
+          room.players[botId] = makePartyPlayerState(botId, 2, botNick, botHero, nowMs, true);
+          room.status = 'countdown';
+          room.isQuickmatch = false;
+          room.startAtMs = nowMs + PARTY_COUNTDOWN_MS;
+          room.updatedAtMs = nowMs;
+          return {};
+        });
+        if (res.abortResp) return res.abortResp;
+        if (res.notFound || !res.room) return jsonResp({ ok: false, error: '房间不存在或已过期' }, 404);
+        return jsonResp(buildPartyRoomResponse(res.room, pid, now, false));
+      }
+
+      if (path === '/api/party/sync') {
+        const rcode = String(body.roomCode || '').replace(/[^0-9]/g, '').slice(0, 6);
+        const pid = partyCleanId(body.playerId);
+        let builtResp = null;
+        const res = await mutatePartyRoomCAS(env, rcode, now, (room, nowMs) => {
+          const caller = room.players[pid];
+          if (!caller) return { abortResp: jsonResp({ ok: false, error: '不在此房间内' }, 403) };
+          room.updatedAtMs = nowMs;
+          caller.lastSyncMs = nowMs;
+          if (room.status === 'countdown' && room.startAtMs && nowMs >= Number(room.startAtMs)) {
+            room.status = 'racing';
+          }
+
+          let rival = null;
+          for (const [opId, opObj] of Object.entries(room.players)) {
+            if (opId !== pid) { rival = opObj; break; }
+          }
+          if (rival && !rival.isBot && (room.status === 'countdown' || room.status === 'racing') && (nowMs - Number(rival.lastSyncMs || nowMs)) > 8500) {
+            forfeitPartyPlayer(room, rival.playerId, 'disconnect', nowMs);
+            rival = null;
+          }
+
+          for (const nk of ['x', 'y', 'vx', 'vy', 'dist']) {
+            if (typeof body[nk] === 'number' && Number.isFinite(body[nk])) caller[nk] = body[nk];
+          }
+          if (typeof body.hp === 'number' && Number.isFinite(body.hp)) {
+            caller.hp = Math.max(0, Math.min(999, Math.round(body.hp)));
+          }
+          if (VALID_HEROES.has(body.heroId)) caller.heroId = body.heroId;
+          if (body.animState && typeof body.animState === 'object') {
+            const cleanAnim = { ...body.animState };
+            if (nowMs - Number(caller.shieldConsumedAtMs || 0) <= 1500) cleanAnim.shieldActive = false;
+            if (nowMs - Number(caller.oneHitConsumedAtMs || 0) <= 1500) cleanAnim.oneHitShield = false;
+            caller.animState = cleanAnim;
+          }
+
+          if (body.useItemEvent && typeof body.useItemEvent === 'object') {
+            processPartyItemEvent(room, caller, rival, body.useItemEvent, nowMs);
+          }
+          if (Array.isArray(body.useItemEvents)) {
+            for (const evItem of body.useItemEvents.slice(0, 6)) {
+              if (evItem && typeof evItem === 'object') processPartyItemEvent(room, caller, rival, evItem, nowMs);
+            }
+          }
+
+          const hitTrapId = String(body.trapHitId || '').trim().slice(0, 64);
+          if (hitTrapId && Array.isArray(room.trackTraps)) {
+            for (const trap of room.trackTraps) {
+              if (trap.active && trap.trapId === hitTrapId && trap.ownerId !== pid) {
+                trap.active = false;
+                const ownerP = room.players[trap.ownerId];
+                if (ownerP) {
+                  ownerP.itemsLanded = Number(ownerP.itemsLanded || 0) + 1;
+                  if (!ownerP.isBot) {
+                    ownerP.inbox.push({
+                      eventId: `traphit_${hitTrapId}`,
+                      type: 'trap_landed_ack',
+                      itemId: 'maodie_trap',
+                      fromId: pid,
+                      fromNick: caller.nickname
+                    });
+                  }
+                }
+                break;
+              }
+            }
+          }
+
+          if (rival && rival.isBot) tickPartyBot(room, rival, caller, nowMs);
+
+          if ((room.status === 'racing' || room.status === 'countdown') && Number(caller.dist || 0) >= Number(room.raceDist)) {
+            if (room.status === 'countdown') room.status = 'racing';
+            if (caller.finishedServerMs === null || caller.finishedServerMs === undefined) {
+              caller.dist = Number(room.raceDist);
+              caller.x = Math.max(Number(caller.x || 120), 120 + Number(room.raceDist) * 18);
+              caller.finishedServerMs = nowMs;
+              caller.finishedClientMs = typeof body.finishedClientMs === 'number' ? Math.floor(body.finishedClientMs) : nowMs;
+              caller.elapsedMs = Math.max(1000, nowMs - Number(room.startAtMs || room.createdAtMs));
+            }
+          }
+          if (room.status === 'racing' || room.status === 'finished') {
+            recomputePartyResults(room, nowMs);
+          }
+          builtResp = buildPartyRoomResponse(room, pid, nowMs, true);
+          return {};
+        });
+        if (res.abortResp) return res.abortResp;
+        if (res.notFound || !builtResp) return jsonResp({ ok: false, error: '房间已结束或过期' }, 404);
+        return jsonResp(builtResp);
+      }
+
+      if (path === '/api/party/rematch') {
+        const rcode = String(body.roomCode || '').replace(/[^0-9]/g, '').slice(0, 6);
+        const pid = partyCleanId(body.playerId);
+        const res = await mutatePartyRoomCAS(env, rcode, now, (room, nowMs) => {
+          if (!room.players[pid]) return { abortResp: jsonResp({ ok: false, error: '房间已失效，请重新创建房间' }, 404) };
+          if (VALID_HEROES.has(body.heroId)) room.players[pid].heroId = body.heroId;
+          const voteSet = new Set(Array.isArray(room.rematchVotes) ? room.rematchVotes : []);
+          if (room.status === 'finished') {
+            voteSet.add(pid);
+            for (const [k, pobj] of Object.entries(room.players)) {
+              if (pobj.isBot) voteSet.add(k);
+            }
+            const pKeys = Object.keys(room.players);
+            const allReady = pKeys.length >= 2 && pKeys.every((k) => voteSet.has(k));
+            if (allReady) {
+              const randArr = new Uint32Array(1);
+              crypto.getRandomValues(randArr);
+              const newSeed = (randArr[0] % 1900000000) + 100000;
+              room.trackSeed = newSeed;
+              room.modulePlan = generatePartyModulePlan(newSeed, room.raceDist);
+              room.trackTraps = [];
+              room.processedEventIds = [];
+              room.results = [];
+              room.rematchVotes = [];
+              for (const pobj of Object.values(room.players)) {
+                const fresh = makePartyPlayerState(
+                  pobj.playerId, pobj.slot, pobj.nickname, pobj.heroId, nowMs, Boolean(pobj.isBot), pobj.accountKey || '', pobj.accountName || ''
+                );
+                Object.assign(pobj, fresh);
+              }
+              room.status = 'countdown';
+              room.startAtMs = nowMs + PARTY_COUNTDOWN_MS;
+            } else {
+              room.rematchVotes = Array.from(voteSet);
+            }
+          }
+          room.updatedAtMs = nowMs;
+          return {};
+        });
+        if (res.abortResp) return res.abortResp;
+        if (res.notFound || !res.room) return jsonResp({ ok: false, error: '房间已失效，请重新创建房间' }, 404);
+        return jsonResp(buildPartyRoomResponse(res.room, pid, now, false));
+      }
+
+      if (path === '/api/party/leave') {
+        const rcode = String(body.roomCode || '').replace(/[^0-9]/g, '').slice(0, 6);
+        const pid = partyCleanId(body.playerId);
+        if (rcode.length === 4) {
+          await mutatePartyRoomCAS(env, rcode, now, (room, nowMs) => {
+            if (!room.players[pid]) return {};
+            const shouldDelete = forfeitPartyPlayer(room, pid, 'quit', nowMs);
+            return shouldDelete ? { deleteRoom: true } : {};
+          });
+        }
+        return jsonResp({ ok: true });
+      }
+    }
+
     const STATIC_BINARY_WHITELIST = {
       '/audio/boss_bgm.m4a': 'audio/mp4',
       '/audio/ngm.mp3': 'audio/mpeg',
@@ -755,12 +1874,13 @@ export default {
       '/js/audio.js': { file: '/js/audio.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
       '/js/bosses.js': { file: '/js/bosses.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
       '/js/cloud.js': { file: '/js/cloud.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
+      '/js/party.js': { file: '/js/party.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
       '/js/main.js': { file: '/js/main.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' }
     };
 
     if (request.method === 'GET' && STATIC_TEXT_WHITELIST[path]) {
       const entry = STATIC_TEXT_WHITELIST[path];
-      const kvKey = 'txt_v3_' + entry.file.replace(/[^a-zA-Z0-9_.-]/g, '_');
+      const kvKey = 'txt_v69_' + entry.file.replace(/[^a-zA-Z0-9_.-]/g, '_');
       const wantSync = url.searchParams.get('sync') === '1';
       let txt = wantSync ? null : await env.GAME_KV.get(kvKey);
       if (!txt) {

@@ -145,13 +145,13 @@ export const HEAL_BOBA_PROP = {
   toast: '🍵 绿豆汤 · 缓慢恢复少量生命!'
 };
 
-// Timed Expiring Anti-Burst Energy Shield (Absorbs hits for 8.5s, then expires!)
+// Timed Expiring Anti-Burst Energy Shield (Absorbs hits, meme-packaged as 背带金钟罩!)
 export const TIMED_SHIELD_PROP = {
   id: 'timed_shield',
   sprite: 'prop_shield',
-  badge: '🛡️限时盾',
+  badge: '🛡️金钟罩',
   halo: '#38bdf8',
-  toast: '🛡️ 限时能量护盾 (8.5秒后自动过期)!'
+  toast: '🛡️ 背带金钟罩 · 黑子不破防!'
 };
 
 export const STAGE_SPAN_M = 360;
@@ -208,3 +208,86 @@ export const BOSS_ROSTER = [
 ];
 
 export const MEME_CRIES = ['鸡你太美!', '曼波~', '哈基米!', '我才是奶龙!', '叮咚鸡!', '大狗嚼!'];
+
+// Green-Bean Recharge Tiers (1 RMB = 1,000 🌿 baseline + progressive bonus tiers + +2,000 🌿 Account First-Top-Up Gift)
+export const FIRST_RECHARGE_BONUS_BEANS = 2000;
+export const RECHARGE_PACKS = [
+  {
+    id: 'pack_1',
+    name: '🌱 1元尝鲜包',
+    priceYuan: 1,
+    amountFen: 100,
+    baseBeans: 1000,
+    bonusBeans: 0,
+    totalBeans: 1000,
+    bonusPctLbl: '基准 1元=1000豆',
+    badge: '零门槛体验',
+    theme: 'slate',
+    desc: '1 RMB 兑换 1,000 绿豆标准比例'
+  },
+  {
+    id: 'pack_6',
+    name: '🔥 新手破冰包',
+    priceYuan: 6,
+    amountFen: 600,
+    baseBeans: 6000,
+    bonusBeans: 800,
+    totalBeans: 6800,
+    bonusPctLbl: '多送 +13%',
+    badge: '🔥 人气首推',
+    theme: 'emerald',
+    desc: '6,000 基础豆 + 额外加赠 800 🌿'
+  },
+  {
+    id: 'pack_18',
+    name: '⚡ 极速冲刺包',
+    priceYuan: 18,
+    amountFen: 1800,
+    baseBeans: 18000,
+    bonusBeans: 4000,
+    totalBeans: 22000,
+    bonusPctLbl: '多送 +22%',
+    badge: '⚡ 畅玩爆款',
+    theme: 'sky',
+    desc: '18,000 基础豆 + 额外加赠 4,000 🌿'
+  },
+  {
+    id: 'pack_30',
+    name: '💎 天赋进阶包',
+    priceYuan: 30,
+    amountFen: 3000,
+    baseBeans: 30000,
+    bonusBeans: 9000,
+    totalBeans: 39000,
+    bonusPctLbl: '多送 +30%',
+    badge: '💎 冲榜热销',
+    theme: 'violet',
+    desc: '30,000 基础豆 + 额外加赠 9,000 🌿'
+  },
+  {
+    id: 'pack_68',
+    name: '👑 霸主豪华箱',
+    priceYuan: 68,
+    amountFen: 6800,
+    baseBeans: 68000,
+    bonusBeans: 27000,
+    totalBeans: 95000,
+    bonusPctLbl: '多送 +40%',
+    badge: '👑 超值特惠',
+    theme: 'amber',
+    desc: '68,000 基础豆 + 额外加赠 27,000 🌿'
+  },
+  {
+    id: 'pack_128',
+    name: '🏆 至尊满配金库',
+    priceYuan: 128,
+    amountFen: 12800,
+    baseBeans: 128000,
+    bonusBeans: 60000,
+    totalBeans: 188000,
+    bonusPctLbl: '多送 +47%',
+    badge: '🏆 毕业神档',
+    theme: 'rose',
+    desc: '128,000 基础豆 + 额外狂送 60,000 🌿'
+  }
+];
