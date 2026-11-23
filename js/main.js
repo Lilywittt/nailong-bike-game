@@ -25,15 +25,22 @@ import {
   getTalentLvFromSave,
   getSuperChargeSpeedMultFromSave,
   getAutoRegenPer5sFromSave
-} from './config.js?v=7.0';
+} from './config.js?v=8.0';
 
 import {
   buildAllSculptedAssets,
   drawModelOn,
   drawSpaldingWheelOn,
   drawSculptedBikeAndHero,
-  getEnemySpriteKey
-} from './models.js?v=7.0';
+  getEnemySpriteKey,
+  getHeroPortraitDataUrl
+} from './models.js?v=8.0';
+
+import {
+  drawBiomeAtmosphere,
+  drawSculptedTerrainAndRoad,
+  drawHubDioramaBackdrop
+} from './scenery.js?v=8.0';
 
 import {
   ensureAudio,
@@ -48,10 +55,10 @@ import {
   stopBossBgm,
   playSfx,
   tickProceduralBgm
-} from './audio.js?v=7.0';
+} from './audio.js?v=8.0';
 
-import { createCloudStore } from './cloud.js?v=7.0';
-import { createPartyController } from './party.js?v=7.0';
+import { createCloudStore } from './cloud.js?v=8.0';
+import { createPartyController } from './party.js?v=8.0';
 import {
   initBossCustomState,
   clearBossTransientHazards,
@@ -60,7 +67,7 @@ import {
   handlePlayerBossInteraction,
   updateBossEngine,
   renderBossArenaAndModel
-} from './bosses.js?v=7.0';
+} from './bosses.js?v=8.0';
 
 // Zero-allocation in-place array compaction (eliminates 1,400+ GC array allocations/sec!)
 function compactInPlace(arr, keepFn) {
@@ -498,8 +505,9 @@ function refreshHubUI() {
     const hLv = getHeroLvFromSave(s, h.id);
     const div = document.createElement('div');
     div.className = `hero-slot ${isSel ? 'selected' : ''}`;
+    const portraitUrl = getHeroPortraitDataUrl(h.id);
     div.innerHTML = `
-      <div style="font-size:19px;">${h.icon}</div>
+      <img class="hero-avatar" src="${portraitUrl}" alt="${h.name}" />
       <div class="hero-nm">${h.name}</div>
       <div class="hero-tag">${h.tag}·Lv${hLv}</div>
     `;
@@ -2977,7 +2985,6 @@ function setStyleCached(key, el, prop, val) {
 
 function syncControlsUI() {
   const h = getHero();
-  setTextCached('jIco', jumpIcon, '⬆️');
   setTextCached('jLbl', jumpLbl, h.id === 'hakimi' && !player.onGround ? `起跳(${player.jumpsLeft})` : '起跳');
 
   setTextCached('sIco', skillIcon, h.skillIcon || '✨');
@@ -4358,10 +4365,11 @@ function update(realDt) {
   for (let i = 0; i < hyperGhosts.length; i++) hyperGhosts[i].life -= realDt;
   compactInPlace(hyperGhosts, (g) => g.life > 0);
 
-  if (player.vx > 430 && speedLines.length < 16 && Math.random() < 0.55) {
-    speedLines.push({ x: W + 20, y: Math.random() * H, len: 60 + Math.random() * 90, life: 0.20 });
+  if (player.vx > 480 && speedLines.length < 18 && Math.random() < 0.60) {
+    const edgeY = Math.random() < 0.5 ? (Math.random() * H * 0.28) : (H * 0.72 + Math.random() * H * 0.26);
+    speedLines.push({ x: W + 20, y: edgeY, len: 70 + Math.random() * 110, life: 0.22, maxLife: 0.22 });
   }
-  for (let i = 0; i < speedLines.length; i++) { speedLines[i].x -= 1750 * realDt; speedLines[i].life -= realDt; }
+  for (let i = 0; i < speedLines.length; i++) { speedLines[i].x -= 1850 * realDt; speedLines[i].life -= realDt; }
   compactInPlace(speedLines, (s) => s.life > 0);
 
   if (player.weaponTimer > 0) {
@@ -4432,7 +4440,10 @@ function update(realDt) {
   for (let i = 0; i < rails.length; i++) if (rails[i].energizedTimer > 0) rails[i].energizedTimer -= realDt;
   for (let i = 0; i < flamePuffs.length; i++) {
     const fp = flamePuffs[i];
-    fp.x += fp.vx * dt; fp.y += fp.vy * dt - 30 * dt; fp.r += 24 * dt; fp.life -= realDt;
+    fp.x += fp.vx * dt;
+    fp.y += fp.vy * dt - (fp.kind === 'dust' ? 8 : 28) * dt;
+    fp.r = Math.max(1.5, fp.r + ((fp.kind === 'bean_spark' || fp.kind === 'gold_spark') ? -8 : (fp.kind === 'dust' ? 14 : 24)) * dt);
+    fp.life -= realDt;
   }
   compactInPlace(flamePuffs, (f) => f.life > 0);
 
@@ -4759,11 +4770,26 @@ function update(realDt) {
           takePlayerDamage(16, true);
         }
       } else if (!tState.isPit && player.y >= gY) {
+        const impactVy = player.vy;
         player.y = gY; player.vy = 0;
         player.onGround = true;
         player.jumpsLeft = getMaxJumps();
         player.angle = gSlope;
         player.jiggleVel = 210;
+        if (impactVy > 220) {
+          for (let d = 0; d < 5; d++) {
+            pushCapped(flamePuffs, {
+              kind: 'dust',
+              x: player.x - 24 + d * 12,
+              y: gY - 2,
+              vx: player.vx * 0.35 + (d - 2) * 55,
+              vy: -25 - Math.random() * 45,
+              r: 7 + Math.random() * 6,
+              life: 0.26,
+              maxLife: 0.26
+            }, 64);
+          }
+        }
       } else {
         player.angle += (Math.max(-0.42, Math.min(0.42, player.vy * 0.0007)) - player.angle) * dt * 8;
       }
@@ -5193,6 +5219,18 @@ function update(realDt) {
       runStats.beans += b.giant ? 3 : Math.min(2, b.val || 1);
       addSuperCharge(b.giant ? 0.20 : 0.06);
       playSfx('bean', combo);
+      for (let sp = 0; sp < (b.giant ? 5 : 2); sp++) {
+        pushCapped(flamePuffs, {
+          kind: b.giant ? 'gold_spark' : 'bean_spark',
+          x: b.x + (Math.random() - 0.5) * 14,
+          y: b.y + (Math.random() - 0.5) * 14,
+          vx: player.vx * 0.5 + (Math.random() - 0.5) * 90,
+          vy: -40 - Math.random() * 65,
+          r: b.giant ? 6.5 : 4.5,
+          life: 0.22,
+          maxLife: 0.22
+        }, 64);
+      }
     }
   }
 
@@ -5272,76 +5310,17 @@ function renderHubPreview(now) {
   }
   pCtx.save();
   pCtx.scale(dpr, dpr);
-  pCtx.fillStyle = '#38bdf8'; pCtx.fillRect(0, 0, cw, ch);
-  pCtx.fillStyle = '#bae6fd'; pCtx.fillRect(0, ch * 0.45, cw, ch * 0.55);
-  pCtx.fillStyle = '#15803d'; pCtx.fillRect(0, ch - 22, cw, 22);
-  pCtx.fillStyle = '#334155'; pCtx.fillRect(0, ch - 24, cw, 9);
+  drawHubDioramaBackdrop(pCtx, cw, ch, now);
 
   const t = now * 0.008;
-  drawSculptedBikeAndHero(pCtx, store.save.selectedHero, cw * 0.48, ch - 14, 0, t, t * 0.8, Math.sin(t * 2) * 3, store.save.mods, { scale: 0.63 });
+  drawSculptedBikeAndHero(pCtx, store.save.selectedHero, cw * 0.48, ch - 13, 0, t, t * 0.8, Math.sin(t * 2) * 3, store.save.mods, { scale: 0.65 });
   pCtx.restore();
 }
 
 function drawAtmosphereAndScenery(camX) {
   const st = STAGES[stageIndex];
-  const sg = ctx.createLinearGradient(0, 0, 0, H);
-  sg.addColorStop(0, st.skyTop); sg.addColorStop(0.58, st.skyMid); sg.addColorStop(1, st.skyBot);
-  ctx.fillStyle = sg; ctx.fillRect(0, 0, W, H);
-
-  if (stageFadeTimer > 0 && prevStageIndex !== stageIndex) {
-    const pst = STAGES[prevStageIndex];
-    ctx.save();
-    ctx.globalAlpha = stageFadeTimer;
-    const psg = ctx.createLinearGradient(0, 0, 0, H);
-    psg.addColorStop(0, pst.skyTop); psg.addColorStop(0.58, pst.skyMid); psg.addColorStop(1, pst.skyBot);
-    ctx.fillStyle = psg; ctx.fillRect(0, 0, W, H);
-    ctx.restore();
-  }
-
-  if (bonusSkyAlpha > 0.01) {
-    ctx.save();
-    ctx.globalAlpha = bonusSkyAlpha;
-    const rg = ctx.createLinearGradient(0, 0, 0, H);
-    rg.addColorStop(0, '#4f46e5'); rg.addColorStop(0.45, '#ec4899'); rg.addColorStop(1, '#fef08a');
-    ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
-    ctx.restore();
-    if (bonusSkyAlpha >= 0.98) return;
-  }
-
-  ctx.save();
-  drawSpaldingWheelOn(ctx, W * 0.82, H * 0.16, 24, performance.now() * 0.0008);
-  if (st.id === 'court') {
-    for (let sx = -80; sx < W + 140; sx += 170) {
-      const ox = sx - ((camX * 0.18) % 170);
-      ctx.fillStyle = 'rgba(30, 41, 59, 0.28)';
-      ctx.beginPath(); ctx.moveTo(ox, H * 0.68); ctx.lineTo(ox + 12, H * 0.48); ctx.lineTo(ox + 108, H * 0.48); ctx.lineTo(ox + 120, H * 0.68); ctx.closePath(); ctx.fill();
-    }
-  } else if (st.id === 'snow') {
-    for (let sx = -100; sx < W + 180; sx += 190) {
-      const ox = sx - ((camX * 0.16) % 190);
-      ctx.fillStyle = 'rgba(148, 163, 184, 0.48)';
-      ctx.beginPath(); ctx.moveTo(ox - 20, H * 0.70); ctx.lineTo(ox + 75, H * 0.26); ctx.lineTo(ox + 175, H * 0.70); ctx.closePath(); ctx.fill();
-    }
-  } else if (st.id === 'volcano') {
-    for (let sx = -90; sx < W + 200; sx += 220) {
-      const ox = sx - ((camX * 0.19) % 220);
-      ctx.fillStyle = 'rgba(28, 25, 23, 0.72)';
-      ctx.beginPath(); ctx.moveTo(ox - 10, H * 0.70); ctx.lineTo(ox + 65, H * 0.30); ctx.lineTo(ox + 115, H * 0.30); ctx.lineTo(ox + 190, H * 0.70); ctx.closePath(); ctx.fill();
-    }
-  } else if (st.id === 'bamboo') {
-    for (let sx = -40; sx < W + 90; sx += 68) {
-      const ox = sx - ((camX * 0.23) % 68);
-      ctx.fillStyle = 'rgba(6, 78, 59, 0.45)';
-      ctx.fillRect(ox, H * 0.14, 11, H * 0.56);
-    }
-  } else {
-    for (let sx = -50; sx < W + 130; sx += 125) {
-      const ox = sx - ((camX * 0.22) % 125);
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.48)';
-      ctx.fillRect(ox, H * 0.34, 68, H * 0.36);
-    }
-  }
-  ctx.restore();
+  const pst = stageFadeTimer > 0 && prevStageIndex !== stageIndex ? STAGES[prevStageIndex] : null;
+  drawBiomeAtmosphere(ctx, W, H, camX, st, pst, stageFadeTimer, bonusSkyAlpha, performance.now());
 }
 
 function drawParryRing(cx, cy, dist) {
@@ -5376,14 +5355,20 @@ function render() {
   drawAtmosphereAndScenery(camX);
 
   if (speedLines.length > 0) {
-    ctx.strokeStyle = player.hyperDashActive ? 'rgba(253, 224, 71, 0.78)' : 'rgba(255, 255, 255, 0.50)';
-    ctx.lineWidth = player.hyperDashActive ? 4.5 : 3;
-    ctx.beginPath();
+    ctx.save();
+    ctx.lineCap = 'round';
     for (let i = 0; i < speedLines.length; i++) {
       const sl = speedLines[i];
-      ctx.moveTo(sl.x, sl.y); ctx.lineTo(sl.x + sl.len, sl.y);
+      const u = Math.max(0.1, sl.life / (sl.maxLife || 0.22));
+      ctx.globalAlpha = u * (player.hyperDashActive ? 0.78 : 0.42);
+      ctx.strokeStyle = player.hyperDashActive ? '#fde047' : '#ffffff';
+      ctx.lineWidth = player.hyperDashActive ? 3.5 : 2.2;
+      ctx.beginPath();
+      ctx.moveTo(sl.x, sl.y);
+      ctx.lineTo(sl.x + sl.len, sl.y);
+      ctx.stroke();
     }
-    ctx.stroke();
+    ctx.restore();
   }
 
   ctx.save();
@@ -5397,70 +5382,36 @@ function render() {
   const endWX = camX + W / worldScale + 160;
   const st = STAGES[stageIndex];
 
-  if (superBonusTimer > 0) {
-    ctx.strokeStyle = '#ec4899'; ctx.lineWidth = 22;
-    ctx.beginPath(); ctx.moveTo(startWX, -214); ctx.lineTo(endWX, -214); ctx.stroke();
-    ctx.strokeStyle = '#fde047'; ctx.lineWidth = 8;
-    ctx.beginPath(); ctx.moveTo(startWX, -220); ctx.lineTo(endWX, -220); ctx.stroke();
-  } else {
-    ctx.fillStyle = st.grass;
-    ctx.beginPath();
-    ctx.moveTo(startWX, camY + H / worldScale + 280);
-    for (let wx = startWX; wx <= endWX; wx += 18) ctx.lineTo(wx, getTerrainStateAt(wx).y);
-    ctx.lineTo(endWX, camY + H / worldScale + 280);
-    ctx.closePath(); ctx.fill();
+  drawSculptedTerrainAndRoad(ctx, {
+    startWX,
+    endWX,
+    camY,
+    viewHWorld: H / worldScale,
+    st,
+    pits,
+    iceZones,
+    mudZones,
+    roadScars,
+    getTerrainStateAt,
+    getBaseSurfaceY,
+    superBonusTimer,
+    now: performance.now()
+  });
 
-    ctx.strokeStyle = st.road; ctx.lineWidth = 18;
-    ctx.beginPath();
-    let penDown = false;
-    for (let wx = startWX; wx <= endWX; wx += 18) {
-      const ts = getTerrainStateAt(wx);
-      if (ts.isPit) penDown = false;
-      else {
-        if (!penDown) { ctx.moveTo(wx, ts.y + 5); penDown = true; }
-        else ctx.lineTo(wx, ts.y + 5);
-      }
-    }
-    ctx.stroke();
-
-    for (let i = 0; i < pits.length; i++) {
-      const pit = pits[i];
-      if (pit.x > endWX + 120) continue;
-      const y1 = getBaseSurfaceY(pit.x), y2 = getBaseSurfaceY(pit.x + pit.len);
-      if (!pit.bridged) {
-        ctx.fillStyle = 'rgba(220, 38, 38, 0.85)';
-        ctx.fillRect(pit.x, y1 + 14, pit.len, 220);
-        ctx.strokeStyle = '#ef4444';
-        ctx.lineWidth = 5;
-        ctx.beginPath();
-        ctx.moveTo(pit.x, y1); ctx.lineTo(pit.x, y1 + 120);
-        ctx.moveTo(pit.x + pit.len, y2); ctx.lineTo(pit.x + pit.len, y2 + 120);
-        ctx.stroke();
-        const warnX = pit.x - 42, warnY = getBaseSurfaceY(warnX) - 48 + Math.sin(performance.now() * 0.015) * 6;
-        ctx.save(); ctx.translate(warnX, warnY);
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)'; ctx.strokeStyle = '#4ade80'; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.arc(0, 0, 17, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-        ctx.font = '900 18px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText('⬆️', 0, 1);
-        ctx.restore();
-      }
-      if (pit.bridged) {
-        ctx.fillStyle = '#38bdf8';
-        ctx.fillRect(pit.x - 8, y1 - 2, pit.len + 16, 12);
-      }
-    }
-
+  if (superBonusTimer <= 0) {
     for (let i = 0; i < checkpointFlags.length; i++) {
       const fl = checkpointFlags[i];
       if (fl.x > endWX) continue;
       const fy = getBaseSurfaceY(fl.x);
       ctx.save(); ctx.translate(fl.x, fy);
-      ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 4.5;
-      ctx.beginPath(); ctx.moveTo(0, 2); ctx.lineTo(0, -102); ctx.stroke();
+      ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 7.5;
+      ctx.beginPath(); ctx.moveTo(0, 2); ctx.lineTo(0, -104); ctx.stroke();
+      ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 4; ctx.stroke();
       ctx.fillStyle = fl.passed ? '#4ade80' : '#f97316';
-      ctx.beginPath(); ctx.moveTo(0, -100); ctx.lineTo(54, -85); ctx.lineTo(0, -70); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = '#0f172a'; ctx.font = '900 10px sans-serif';
-      ctx.fillText(`${fl.dist}m`, 5, -82);
+      ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(0, -102); ctx.lineTo(56, -86); ctx.lineTo(0, -70); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#0f172a'; ctx.font = '900 10.5px sans-serif';
+      ctx.fillText(`${fl.dist}m`, 6, -83);
       ctx.restore();
     }
 
@@ -5476,13 +5427,6 @@ function render() {
       ctx.restore();
     }
 
-    for (let i = 0; i < mudZones.length; i++) {
-      const mz = mudZones[i];
-      if (mz.x > endWX) continue;
-      ctx.strokeStyle = mz.dried ? '#ca8a04' : '#7e22ce'; ctx.lineWidth = 14;
-      ctx.beginPath(); ctx.moveTo(mz.x, getBaseSurfaceY(mz.x) + 4); ctx.lineTo(mz.x + mz.len, getBaseSurfaceY(mz.x + mz.len) + 4); ctx.stroke();
-    }
-
     for (let i = 0; i < lilyPads.length; i++) {
       const lp = lilyPads[i];
       if (lp.x <= endWX) {
@@ -5495,16 +5439,38 @@ function render() {
 
     for (let i = 0; i < rails.length; i++) {
       const rl = rails[i];
-      if (rl.x > endWX) continue;
+      if (rl.x > endWX || rl.x + rl.len < startWX) continue;
       const x1 = rl.x, x2 = rl.x + rl.len;
-      ctx.strokeStyle = rl.energizedTimer > 0 ? '#fde047' : (rl.kind === 'maglev' ? '#38bdf8' : '#f8fafc');
-      ctx.lineWidth = 7;
+      ctx.save();
+      ctx.lineCap = 'round';
+      // Support pylons at rail ends
+      for (const px of [x1 + 14, x2 - 14]) {
+        if (px >= startWX - 20 && px <= endWX + 20) {
+          const gy = getBaseSurfaceY(px);
+          const ry = gy - rl.hOff;
+          ctx.strokeStyle = 'rgba(15, 23, 42, 0.52)';
+          ctx.lineWidth = 5;
+          ctx.beginPath(); ctx.moveTo(px, gy); ctx.lineTo(px, ry + 4); ctx.stroke();
+        }
+      }
+      // 3D Beveled Skyrail / Maglev Beam
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 12;
       ctx.beginPath();
       for (let wx = x1; wx <= x2; wx += 24) {
         const ry = getBaseSurfaceY(wx) - rl.hOff;
         if (wx === x1) ctx.moveTo(wx, ry); else ctx.lineTo(wx, ry);
       }
       ctx.stroke();
+
+      ctx.strokeStyle = rl.energizedTimer > 0 ? '#fde047' : (rl.kind === 'maglev' ? '#38bdf8' : '#e2e8f0');
+      ctx.lineWidth = 6.5;
+      ctx.stroke();
+
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
     }
 
     if (partyCtrl && partyCtrl.isActive()) {
@@ -5707,30 +5673,101 @@ function render() {
   if (activeRunHeroId === 'nailong' && (player.flameHolding || player.flameBurstTimer > 0) && player.flameFuel > 0) {
     const sx = player.x + 34, sy = player.y - 92;
     const beamLen = 475;
+    const fNow = performance.now();
+    const wob = Math.sin(fNow * 0.045) * 9;
     ctx.save();
-    ctx.fillStyle = 'rgba(249, 115, 22, 0.75)';
+    // 1. Outer Crimson Dragon-Fire Billow
+    ctx.fillStyle = 'rgba(220, 38, 38, 0.58)';
     ctx.beginPath();
-    ctx.moveTo(sx, sy - 10); ctx.lineTo(sx + beamLen, sy - 42); ctx.lineTo(sx + beamLen, sy + 42); ctx.lineTo(sx, sy + 12);
-    ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = '#fde047'; ctx.lineWidth = 10;
-    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + beamLen * 0.85, sy); ctx.stroke();
+    ctx.moveTo(sx, sy - 12);
+    ctx.quadraticCurveTo(sx + beamLen * 0.5, sy - 54 + wob, sx + beamLen, sy - 46 - wob);
+    ctx.lineTo(sx + beamLen + 18, sy + wob * 0.5);
+    ctx.lineTo(sx + beamLen, sy + 46 + wob);
+    ctx.quadraticCurveTo(sx + beamLen * 0.5, sy + 54 - wob, sx, sy + 14);
+    ctx.closePath();
+    ctx.fill();
+
+    // 2. Inner Roaring Tangerine Plasma Cone
+    ctx.fillStyle = 'rgba(249, 115, 22, 0.88)';
+    ctx.beginPath();
+    ctx.moveTo(sx, sy - 8);
+    ctx.lineTo(sx + beamLen * 0.92, sy - 28 + wob * 0.6);
+    ctx.lineTo(sx + beamLen * 0.92, sy + 28 - wob * 0.6);
+    ctx.lineTo(sx, sy + 9);
+    ctx.closePath();
+    ctx.fill();
+
+    // 3. White-Hot Core Jet + Rolling Fire Rings + Dragon Muzzle Flash!
+    ctx.strokeStyle = '#fde047';
+    ctx.lineWidth = 14;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(sx + 4, sy); ctx.lineTo(sx + beamLen * 0.82, sy + wob * 0.25); ctx.stroke();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 6;
+    ctx.stroke();
+
+    ctx.fillStyle = '#fef08a';
+    ctx.beginPath(); ctx.arc(sx + 6, sy, 15 + Math.sin(fNow * 0.08) * 3, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(254, 240, 138, 0.85)';
+    ctx.lineWidth = 3.5;
+    for (let r = 0; r < 3; r++) {
+      const rx = sx + 55 + (((fNow * 0.95) + r * 140) % (beamLen * 0.82));
+      const rr = 14 + (rx - sx) * 0.065;
+      ctx.beginPath(); ctx.ellipse(rx, sy, 7, rr, 0, 0, Math.PI * 2); ctx.stroke();
+    }
     ctx.restore();
   }
 
   if (player.swallowVortexTimer > 0) {
     const mx = player.x + 42, my = player.y - 82;
+    const vNow = performance.now();
     ctx.save();
-    ctx.fillStyle = 'rgba(56, 189, 248, 0.34)';
-    ctx.beginPath(); ctx.moveTo(mx, my - 18); ctx.lineTo(mx + 410, my - 120); ctx.lineTo(mx + 410, my + 90); ctx.lineTo(mx, my + 22); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.24)';
+    ctx.beginPath();
+    ctx.moveTo(mx, my - 16);
+    ctx.lineTo(mx + 410, my - 122);
+    ctx.lineTo(mx + 410, my + 92);
+    ctx.lineTo(mx, my + 20);
+    ctx.closePath();
+    ctx.fill();
+
+    // Swirling Wind-Tunnel Vortex Rings Pulling Inward!
+    ctx.strokeStyle = 'rgba(186, 230, 253, 0.88)';
+    ctx.lineWidth = 3.2;
+    for (let k = 0; k < 4; k++) {
+      const prog = 1 - (((vNow * 0.0045) + k * 0.25) % 1);
+      const vx = mx + 24 + prog * 365;
+      const vy = my - 12 * prog;
+      const ry = 18 + prog * 86;
+      ctx.globalAlpha = 0.28 + (1 - prog) * 0.65;
+      ctx.beginPath();
+      ctx.ellipse(vx, vy, 11 + prog * 10, ry, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
   if (player.thunderAuraTimer > 0) {
+    const tNow = performance.now();
+    const cx = player.x + 8, cy = player.y - 46;
+    const baseR = 78 + Math.sin(tNow * 0.03) * 6;
     ctx.save();
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.14)';
+    ctx.beginPath(); ctx.arc(cx, cy, baseR, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = '#38bdf8';
-    ctx.lineWidth = 3.5;
+    ctx.lineWidth = 4.5;
     ctx.beginPath();
-    ctx.arc(player.x + 8, player.y - 44, 78 + Math.sin(performance.now() * 0.03) * 8, 0, Math.PI * 2);
+    for (let s = 0; s <= 16; s++) {
+      const a = (s / 16) * Math.PI * 2 + tNow * 0.006;
+      const jr = baseR + ((s % 2 === 0 ? 6 : -6) * Math.sin(tNow * 0.05 + s));
+      const px = cx + Math.cos(a) * jr;
+      const py = cy + Math.sin(a) * jr;
+      if (s === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    ctx.strokeStyle = '#fef08a';
+    ctx.lineWidth = 2;
     ctx.stroke();
     ctx.restore();
   }
@@ -5740,20 +5777,41 @@ function render() {
     const a = player.thunderTongueAngle;
     const len = 375;
     const tx = cx + Math.cos(a) * len, ty = cy + Math.sin(a) * len;
+    const nx = -Math.sin(a), ny = Math.cos(a);
     ctx.save();
-    ctx.strokeStyle = '#ec4899'; ctx.lineWidth = 18; ctx.lineCap = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#18181b';
+    ctx.lineWidth = 24;
     ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(tx, ty); ctx.stroke();
-    ctx.strokeStyle = '#fde047'; ctx.lineWidth = 5;
-    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(tx, ty); ctx.stroke();
+    ctx.strokeStyle = '#ec4899';
+    ctx.lineWidth = 17;
+    ctx.stroke();
+    ctx.fillStyle = '#f472b6';
+    ctx.beginPath(); ctx.arc(tx, ty, 13, 0, Math.PI * 2); ctx.fill();
+
+    // Crackling Cyan-Gold Lightning Zigzag Wrapped Around Tongue!
+    ctx.strokeStyle = '#fde047';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    for (let seg = 1; seg <= 7; seg++) {
+      const u = seg / 7;
+      const jit = (seg % 2 === 0 ? 14 : -14);
+      ctx.lineTo(cx + (tx - cx) * u + nx * jit, cy + (ty - cy) * u + ny * jit);
+    }
+    ctx.stroke();
     ctx.restore();
   }
 
-  // Fast Solid-Circle Flame Puffs (ZERO createRadialGradient GC churn!)
+  // Multi-Kind Particles: Fire Puffs, Landing Dust, Emerald & Gold Bean Sparkles!
   for (let i = 0; i < flamePuffs.length; i++) {
     const fp = flamePuffs[i];
     const u = Math.max(0, fp.life / fp.maxLife);
-    ctx.globalAlpha = u * 0.85;
-    ctx.fillStyle = u > 0.55 ? '#fde047' : '#ef4444';
+    ctx.globalAlpha = u * (fp.kind === 'dust' ? 0.55 : 0.88);
+    if (fp.kind === 'dust') ctx.fillStyle = '#e2e8f0';
+    else if (fp.kind === 'bean_spark') ctx.fillStyle = '#86efac';
+    else if (fp.kind === 'gold_spark') ctx.fillStyle = '#fef08a';
+    else ctx.fillStyle = u > 0.55 ? '#fde047' : '#ef4444';
     ctx.beginPath(); ctx.arc(fp.x, fp.y, fp.r, 0, Math.PI * 2); ctx.fill();
   }
   ctx.globalAlpha = 1;
@@ -5889,13 +5947,21 @@ function render() {
 
   for (let i = 0; i < popups.length; i++) {
     const pop = popups[i];
-    ctx.globalAlpha = Math.max(0, pop.life / pop.maxLife);
+    const ratio = Math.max(0, pop.life / pop.maxLife);
+    const popScale = ratio > 0.82 ? (1 + (ratio - 0.82) * 2.1) : 1;
+    ctx.save();
+    ctx.translate(pop.x, pop.y);
+    if (popScale !== 1) ctx.scale(popScale, popScale);
+    ctx.globalAlpha = Math.min(1, ratio * 1.25);
     ctx.font = `900 ${pop.size}px -apple-system, "PingFang SC", sans-serif`;
     ctx.textAlign = 'center';
-    ctx.lineWidth = 4; ctx.strokeStyle = '#0f172a';
-    ctx.strokeText(pop.text, pop.x, pop.y);
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = '#0f172a';
+    ctx.strokeText(pop.text, 0, 0);
     ctx.fillStyle = pop.color;
-    ctx.fillText(pop.text, pop.x, pop.y);
+    ctx.fillText(pop.text, 0, 0);
+    ctx.restore();
   }
   ctx.globalAlpha = 1;
 

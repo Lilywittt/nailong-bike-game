@@ -8,17 +8,22 @@
 //  5. Non-Lethal 1.3s Pelican Rescue Respawn & Server-Adjudicated Finish Podium
 // ============================================================================
 
-import { HEROES } from './config.js?v=7.0';
+import { HEROES } from './config.js?v=8.0';
 import {
   drawModelOn,
   drawSpaldingWheelOn,
-  drawSculptedBikeAndHero
-} from './models.js?v=7.0';
+  drawSculptedBikeAndHero,
+  getHeroPortraitDataUrl
+} from './models.js?v=8.0';
+import {
+  drawPipMiniScenery,
+  drawPipMiniTrackWorld
+} from './scenery.js?v=8.0';
 import {
   ensureAudio,
   playVoiceSlice,
   playSfx
-} from './audio.js?v=7.0';
+} from './audio.js?v=8.0';
 
 const PARTY_PID_KEY = 'pelican_party_pid_v1';
 const PARTY_TAB_SID_KEY = 'pelican_party_tabsid_v1';
@@ -3166,7 +3171,7 @@ export function createPartyController(bridge) {
       ctx.restore();
     }
 
-    // 3. Rainbow Meme Mystery Boxes (`🎁 梗盲盒`)
+    // 3. 3D Glossy Neon Meme Mystery Cubes (`🎁 梗盲盒`)
     for (let i = 0; i < party.crates.length; i++) {
       const cr = party.crates[i];
       if (cr.taken || cr.x < startWX - 60 || cr.x > endWX + 60) continue;
@@ -3175,37 +3180,46 @@ export function createPartyController(bridge) {
       const wob = Math.sin(cr.phase * 1.2) * 0.14;
       ctx.rotate(wob);
 
-      // Outer rainbow glow ring
+      // Soft outer volumetric glow + rotating ring
       const ringCols = ['#ec4899', '#fde047', '#38bdf8', '#4ade80'];
-      ctx.strokeStyle = ringCols[Math.floor((now * 0.008 + i) % ringCols.length)];
-      ctx.lineWidth = 3.5;
+      const rCol = ringCols[Math.floor((now * 0.008 + i) % ringCols.length)];
+      ctx.fillStyle = 'rgba(168, 85, 247, 0.24)';
+      ctx.beginPath(); ctx.arc(0, 0, 34, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = rCol;
+      ctx.lineWidth = 3.2;
+      ctx.setLineDash([10, 6]);
       ctx.beginPath();
-      ctx.arc(0, 0, 31, 0, Math.PI * 2);
+      ctx.arc(0, 0, 31, now * 0.003, now * 0.003 + Math.PI * 2);
       ctx.stroke();
+      ctx.setLineDash([]);
 
-      // 3D Mystery Cube
-      ctx.fillStyle = '#7c3aed';
+      // 3D Beveled Mystery Cube + Specular Top Glass
+      const cg = ctx.createLinearGradient(-22, -22, 22, 22);
+      cg.addColorStop(0, '#c084fc');
+      cg.addColorStop(0.45, '#7c3aed');
+      cg.addColorStop(1, '#3b0764');
+      ctx.fillStyle = cg;
       ctx.strokeStyle = '#0f172a';
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 3.8;
       ctx.beginPath();
-      ctx.roundRect(-22, -22, 44, 44, 10);
+      ctx.roundRect(-22, -22, 44, 44, 11);
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = '#ec4899';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.28)';
       ctx.beginPath();
-      ctx.roundRect(-17, -17, 34, 16, 6);
+      ctx.roundRect(-18, -18, 36, 14, 6);
       ctx.fill();
 
-      // Ribbon & Question Mark
+      // Golden Ribbon & Outlined Question Mark
       ctx.fillStyle = '#fde047';
-      ctx.fillRect(-4, -22, 8, 44);
-      ctx.fillRect(-22, -4, 44, 8);
-      ctx.font = '900 20px sans-serif';
+      ctx.fillRect(-4, -21, 8, 42);
+      ctx.fillRect(-21, -4, 42, 8);
+      ctx.font = '900 22px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.strokeStyle = '#0f172a';
-      ctx.lineWidth = 3.5;
+      ctx.lineWidth = 4.5;
       ctx.strokeText('?', 0, 1);
       ctx.fillStyle = '#ffffff';
       ctx.fillText('?', 0, 1);
@@ -4120,43 +4134,23 @@ export function createPartyController(bridge) {
 
     const stages = bridge.getStages ? bridge.getStages() : null;
     const stgIdx = bridge.getStageIndex ? bridge.getStageIndex() : 0;
-    const stg = stages && stages[stgIdx] ? stages[stgIdx] : { skyTop: '#0ea5e9', skyBot: '#fef08a', road: '#334155' };
-    ctx.fillStyle = stg.skyTop || '#0ea5e9';
-    ctx.fillRect(vx0, vy0, vw, vh * 0.56);
-    ctx.fillStyle = stg.skyBot || '#bae6fd';
-    ctx.fillRect(vx0, vy0 + vh * 0.56, vw, vh * 0.44);
+    const stg = stages && stages[stgIdx] ? stages[stgIdx] : { id: 'court', skyTop: '#0ea5e9', skyBot: '#fef08a', road: '#334155' };
 
-    // Sub-camera world transform centered on rival!
+    // Sub-camera world bounds centered on rival!
     const subZoom = 0.36;
     const focusWX = rr.x + 42;
     const focusWY = rr.y - 46;
     const subStartWX = focusWX - (vw / subZoom) * 0.55 - 80;
     const subEndWX = focusWX + (vw / subZoom) * 0.65 + 80;
 
+    drawPipMiniScenery(ctx, vx0, vy0, vw, vh, stg, focusWX, getSurfaceY, subStartWX, subEndWX, w.pits);
+
     ctx.translate(vx0 + vw * 0.40, vy0 + vh * 0.68);
     ctx.scale(subZoom, subZoom);
     ctx.translate(-focusWX, -focusWY);
 
-    // Terrain road polygon + pits inside rival's camera view
-    ctx.fillStyle = stg.road || '#334155';
-    ctx.strokeStyle = '#0f172a';
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    let firstPt = true;
-    for (let wx = Math.floor(subStartWX / 28) * 28; wx <= subEndWX; wx += 28) {
-      let inPit = false;
-      for (let k = 0; k < w.pits.length; k++) {
-        const pt = w.pits[k];
-        if (!pt.bridged && wx > pt.x && wx < pt.x + pt.len) { inPit = true; break; }
-      }
-      const gy = inPit ? (getSurfaceY(wx) + 220) : getSurfaceY(wx);
-      if (firstPt) { ctx.moveTo(wx, gy + 260); ctx.lineTo(wx, gy); firstPt = false; }
-      else ctx.lineTo(wx, gy);
-    }
-    ctx.lineTo(subEndWX, getSurfaceY(subEndWX) + 260);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
+    // Rich 3D turf + beveled asphalt inside rival's camera view
+    drawPipMiniTrackWorld(ctx, stg, getSurfaceY, subStartWX, subEndWX, w.pits);
 
     // Elevated Skyrails in rival's view
     for (let i = 0; i < w.rails.length; i++) {
@@ -4423,7 +4417,8 @@ export function createPartyController(bridge) {
         btn.className = `party-hpill ${h.id === curHero ? 'active' : ''}`;
         btn.dataset.hero = h.id;
         const shortNm = HERO_SHORT_NAMES[h.id] || h.name.slice(0, 3);
-        btn.innerHTML = `<span class="php-ico">${h.icon}</span><span class="php-nm">${shortNm}</span>`;
+        const portraitUrl = getHeroPortraitDataUrl(h.id);
+        btn.innerHTML = `<img class="php-avatar" src="${portraitUrl}" alt="${shortNm}" /><span class="php-nm">${shortNm}</span>`;
         btn.addEventListener('click', () => selectPartyHero(h.id));
         container.appendChild(btn);
       }

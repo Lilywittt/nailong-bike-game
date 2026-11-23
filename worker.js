@@ -1984,6 +1984,7 @@ export default {
       '/css/style.css': { file: '/css/style.css', mime: 'text/css; charset=utf-8', cache: 'public, max-age=300' },
       '/js/config.js': { file: '/js/config.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
       '/js/models.js': { file: '/js/models.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
+      '/js/scenery.js': { file: '/js/scenery.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
       '/js/audio.js': { file: '/js/audio.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
       '/js/bosses.js': { file: '/js/bosses.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
       '/js/cloud.js': { file: '/js/cloud.js', mime: 'application/javascript; charset=utf-8', cache: 'public, max-age=300' },
@@ -1993,7 +1994,7 @@ export default {
 
     if (request.method === 'GET' && STATIC_TEXT_WHITELIST[path]) {
       const entry = STATIC_TEXT_WHITELIST[path];
-      const kvKey = 'txt_v70_' + entry.file.replace(/[^a-zA-Z0-9_.-]/g, '_');
+      const kvKey = 'txt_v80_' + entry.file.replace(/[^a-zA-Z0-9_.-]/g, '_');
       const wantSync = url.searchParams.get('sync') === '1';
       let txt = wantSync ? null : await env.GAME_KV.get(kvKey);
       if (!txt) {

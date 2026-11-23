@@ -9,8 +9,8 @@
 //     telegraphs physically, and can be countered by Jump, 🐔铁山靠, Skills & Props!
 // ============================================================================
 
-import { drawModelOn, drawSpaldingWheelOn } from './models.js?v=7.0';
-import { playSfx, playCriticalMomentVoice } from './audio.js?v=7.0';
+import { drawModelOn, drawSpaldingWheelOn } from './models.js?v=8.0';
+import { playSfx, playCriticalMomentVoice } from './audio.js?v=8.0';
 
 export function initBossCustomState(boss, playerX) {
   boss.mech = 'idle';
@@ -1579,13 +1579,24 @@ export function renderBossArenaAndModel(ctx, boss, env) {
     ctx.restore();
   }
 
-  // -------------------- 2. BOSS SPRITE + ORBITING DIZZY STARS & VISUAL HIT FEEDBACK --------------------
+  // -------------------- 2. BOSS SPRITE + RAGE AURA, CONTACT SHADOW & HIT FEEDBACK --------------------
   ctx.save();
+  // Ground contact shadow beneath Boss
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.34)';
+  const bShadowW = Math.max(26, 62 + Math.min(0, boss.yOff) * 0.18);
+  ctx.beginPath();
+  ctx.ellipse(bx, groundBY - 2, bShadowW, 10, 0, 0, Math.PI * 2);
+  ctx.fill();
+
   if (boss.phase >= 2) {
-    const pulseR = 62 + Math.sin(now * 0.018) * 8;
-    ctx.strokeStyle = boss.phase >= 3 ? 'rgba(239, 68, 68, 0.72)' : 'rgba(250, 204, 21, 0.65)';
-    ctx.lineWidth = 5;
-    ctx.beginPath(); ctx.arc(bx, by, pulseR, 0, Math.PI * 2); ctx.stroke();
+    const pulseR = 64 + Math.sin(now * 0.018) * 8;
+    ctx.fillStyle = boss.phase >= 3 ? 'rgba(239, 68, 68, 0.18)' : 'rgba(250, 204, 21, 0.16)';
+    ctx.beginPath(); ctx.arc(bx, by, pulseR + 6, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = boss.phase >= 3 ? 'rgba(239, 68, 68, 0.85)' : 'rgba(250, 204, 21, 0.80)';
+    ctx.lineWidth = 4.5;
+    ctx.setLineDash([12, 6]);
+    ctx.beginPath(); ctx.arc(bx, by, pulseR, now * 0.004, now * 0.004 + Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   const faceRight = boss.kind === 'dagou_jiao' && !boss.pinnedByHyper;
