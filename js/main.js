@@ -25,7 +25,7 @@ import {
   getTalentLvFromSave,
   getSuperChargeSpeedMultFromSave,
   getAutoRegenPer5sFromSave
-} from './config.js?v=8.1';
+} from './config.js?v=8.2';
 
 import {
   buildAllSculptedAssets,
@@ -34,13 +34,13 @@ import {
   drawSculptedBikeAndHero,
   getEnemySpriteKey,
   getHeroPortraitDataUrl
-} from './models.js?v=8.1';
+} from './models.js?v=8.2';
 
 import {
   drawBiomeAtmosphere,
   drawSculptedTerrainAndRoad,
   drawHubDioramaBackdrop
-} from './scenery.js?v=8.1';
+} from './scenery.js?v=8.2';
 
 import {
   ensureAudio,
@@ -55,10 +55,10 @@ import {
   stopBossBgm,
   playSfx,
   tickProceduralBgm
-} from './audio.js?v=8.1';
+} from './audio.js?v=8.2';
 
-import { createCloudStore } from './cloud.js?v=8.1';
-import { createPartyController } from './party.js?v=8.1';
+import { createCloudStore } from './cloud.js?v=8.2';
+import { createPartyController } from './party.js?v=8.2';
 import {
   initBossCustomState,
   clearBossTransientHazards,
@@ -67,7 +67,7 @@ import {
   handlePlayerBossInteraction,
   updateBossEngine,
   renderBossArenaAndModel
-} from './bosses.js?v=8.1';
+} from './bosses.js?v=8.2';
 
 // Zero-allocation in-place array compaction (eliminates 1,400+ GC array allocations/sec!)
 function compactInPlace(arr, keepFn) {
@@ -100,8 +100,8 @@ function getSurvivalGradient(singleDist) {
   const dmgMult = +(1 + 0.36 * Math.log1p(km)).toFixed(2);
   // Decoupled, smooth, strictly bounded forward speed (+0 at 0m, +28 at 1km, +47 at 2km, upper bound = +92 px/s)
   const boundedSpeedAdd = Math.round(92 * (1 - Math.exp(-d / 2800)));
-  // Smooth continuous environmental attrition past 550m
-  const envDrain = d > 550 ? Math.min(2.6, 0.32 + Math.sqrt((d - 550) / 1000) * 0.82) : 0;
+  // ZERO invisible environmental air-drain — players ONLY lose HP from visible collisions!
+  const envDrain = 0;
 
   const tier = Math.min(6, fullKm + 1);
   let icon = '🟢', border = '#22c55e', color = '#4ade80';
@@ -3546,6 +3546,7 @@ function bindBtn(el, onDown, onUp, captureHold = false) {
   if (!el) return;
   el.addEventListener('contextmenu', (e) => e.preventDefault());
   el.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault(); e.stopPropagation();
     if (captureHold && el.setPointerCapture && e.pointerId !== undefined) {
       try { el.setPointerCapture(e.pointerId); } catch (_) {}
@@ -3553,6 +3554,7 @@ function bindBtn(el, onDown, onUp, captureHold = false) {
     el.classList.add('pressed'); onDown();
   });
   const finish = (e) => {
+    if (e && e.pointerType === 'mouse' && e.button !== undefined && e.button !== 0) return;
     if (e && e.cancelable) e.preventDefault();
     if (!el.classList.contains('pressed')) return;
     el.classList.remove('pressed');
@@ -3574,14 +3576,76 @@ bindBtn(hyperDashBtn, onHyperDashPress, onHyperDashRelease, true); // Anti-accid
 bindBtn(skillBtn, onSkillPress, onSkillRelease, false);
 bindBtn(actionBtn, onActionPress, onActionRelease, false);
 
+// Mobile Touch Split on Canvas (Left Half = Jump, Right Half = 铁山靠)
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('pointerdown', (e) => {
-  if (state !== 'PLAYING') return;
+  if (state !== 'PLAYING' || e.pointerType === 'mouse') return;
   e.preventDefault();
   const tapX = isCssLandscapeRotated ? e.clientY : e.clientX;
   if (tapX < W * 0.5) { jumpHeld = true; player.jumpBufferTimer = 0.14; doJump(); }
   else onActionPress();
 });
-canvas.addEventListener('pointerup', () => { jumpHeld = false; onActionRelease(); });
+canvas.addEventListener('pointerup', (e) => {
+  if (e.pointerType === 'mouse') return;
+  jumpHeld = false;
+  onActionRelease();
+});
+
+// Ergonomic PC Mouse Controls: Left Click = 🐔 铁山靠 (Action) | Right Click = ✨ 技能 (Skill / Hold Flame)!
+let pcMouseLeftHeld = false;
+let pcMouseRightHeld = false;
+
+window.addEventListener('contextmenu', (e) => {
+  if (state === 'PLAYING') {
+    e.preventDefault();
+  }
+});
+
+window.addEventListener('mousedown', (e) => {
+  if (state !== 'PLAYING') return;
+  const target = e.target;
+  const onUiOverlay = target && target.closest && target.closest('input, textarea, .modal-card, .hub-card');
+  if (onUiOverlay) return;
+
+  if (e.button === 2) {
+    e.preventDefault();
+    pcMouseRightHeld = true;
+    if (skillBtn) skillBtn.classList.add('pressed');
+    onSkillPress();
+  } else if (e.button === 0) {
+    const onInteractiveBtn = target && target.closest && target.closest('button, a');
+    if (onInteractiveBtn) return;
+    e.preventDefault();
+    pcMouseLeftHeld = true;
+    if (actionBtn) actionBtn.classList.add('pressed');
+    onActionPress();
+  }
+});
+
+window.addEventListener('mouseup', (e) => {
+  if (e.button === 2 && pcMouseRightHeld) {
+    pcMouseRightHeld = false;
+    if (skillBtn) skillBtn.classList.remove('pressed');
+    onSkillRelease();
+  } else if (e.button === 0 && pcMouseLeftHeld) {
+    pcMouseLeftHeld = false;
+    if (actionBtn) actionBtn.classList.remove('pressed');
+    onActionRelease();
+  }
+});
+
+window.addEventListener('blur', () => {
+  if (pcMouseRightHeld) {
+    pcMouseRightHeld = false;
+    if (skillBtn) skillBtn.classList.remove('pressed');
+    onSkillRelease();
+  }
+  if (pcMouseLeftHeld) {
+    pcMouseLeftHeld = false;
+    if (actionBtn) actionBtn.classList.remove('pressed');
+    onActionRelease();
+  }
+});
 
 window.addEventListener('keydown', (e) => {
   const activeTag = document.activeElement ? document.activeElement.tagName : '';
@@ -3790,10 +3854,9 @@ function takePlayerDamage(rawDmg = 11, isPitFall = false) {
   const inPartyHit = Boolean(partyCtrl && partyCtrl.isActive());
   const instantDmg = inPartyHit
     ? Math.max(26, Math.min(36, Math.round(rawDmg * 1.85)))
-    : Math.max(4, Math.round(dmg * 0.55));
-  const smoothBleed = inPartyHit ? 0 : Math.max(0, dmg - instantDmg);
+    : dmg;
   player.hp = Math.max(0, player.hp - instantDmg);
-  player.dotPool = Math.min(player.maxHp * 0.45, (player.dotPool || 0) + smoothBleed);
+  player.dotPool = 0;
   player.regenPool = Math.max(0, player.regenPool * 0.45);
   player.vx = Math.min(player.vx, 255);
   player.vy = isPitFall ? -565 : -190;
@@ -4180,26 +4243,8 @@ function update(realDt) {
     }
   }
 
-  // Smooth Continuous Non-Discrete Bleed (dotPool) + Post-550m Gentle Attrition (NEVER sudden one-shots!)
-  if (state === 'PLAYING' && superBonusTimer <= 0 && headStartTargetDist <= 0 && !player.hyperDashActive) {
-    if (player.dotPool && player.dotPool > 0.01) {
-      const bleedStep = Math.min(player.dotPool, (player.dotPool * 0.85 + 4.5) * realDt);
-      player.dotPool = Math.max(0, player.dotPool - bleedStep);
-      player.hp = Math.max(0, player.hp - bleedStep);
-      if (player.hp <= 0) {
-        if (partyCtrl && partyCtrl.isActive()) {
-          partyCtrl.triggerPartyPlayerKO(false);
-        } else {
-          tryTriggerLethalDeathDashOrDie();
-          if (state === 'DYING') return;
-        }
-      }
-    }
-    const curEnvDrain = (partyCtrl && partyCtrl.isActive()) ? 0 : (getSurvivalGradient(runStats.singleRunDist).envDrain || 0);
-    if (curEnvDrain > 0 && player.hp > 1.5 && player.tempShieldHp <= 0) {
-      player.hp = Math.max(1.2, player.hp - curEnvDrain * realDt);
-    }
-  }
+  // Crisp Collision-Only HP Rules: ZERO post-hit delayed ghost bleed & ZERO invisible air-drain!
+  player.dotPool = 0;
   player.displayHp += (player.hp - player.displayHp) * Math.min(1, realDt * 13);
   if (player.trailHp > player.displayHp) {
     player.trailHp = Math.max(player.displayHp, player.trailHp - Math.max(14, player.maxHp * 0.18) * realDt);

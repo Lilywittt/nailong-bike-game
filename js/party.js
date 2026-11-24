@@ -8,22 +8,22 @@
 //  5. Non-Lethal 1.3s Pelican Rescue Respawn & Server-Adjudicated Finish Podium
 // ============================================================================
 
-import { HEROES } from './config.js?v=8.1';
+import { HEROES } from './config.js?v=8.2';
 import {
   drawModelOn,
   drawSpaldingWheelOn,
   drawSculptedBikeAndHero,
   getHeroPortraitDataUrl
-} from './models.js?v=8.1';
+} from './models.js?v=8.2';
 import {
   drawPipMiniScenery,
   drawPipMiniTrackWorld
-} from './scenery.js?v=8.1';
+} from './scenery.js?v=8.2';
 import {
   ensureAudio,
   playVoiceSlice,
   playSfx
-} from './audio.js?v=8.1';
+} from './audio.js?v=8.2';
 
 const PARTY_PID_KEY = 'pelican_party_pid_v1';
 const PARTY_TAB_SID_KEY = 'pelican_party_tabsid_v1';
