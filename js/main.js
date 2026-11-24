@@ -1397,11 +1397,8 @@ function refreshOrientButtonsUI() {
 function resize() {
   const rawW = window.innerWidth || 390;
   const rawH = window.innerHeight || 844;
-  const isMobileDev = Boolean(
-    (window.matchMedia && window.matchMedia('(pointer: coarse)').matches)
-    || (navigator.maxTouchPoints && navigator.maxTouchPoints > 0)
-    || Math.min(rawW, rawH) <= 980
-  );
+  const isCoarseTouch = Boolean(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+  const isMobileDev = isCoarseTouch || Math.max(rawW, rawH) <= 960;
   const root = document.documentElement;
   root.classList.toggle('is-mobile-device', isMobileDev);
 

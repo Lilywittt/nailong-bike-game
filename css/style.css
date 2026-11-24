@@ -2667,7 +2667,7 @@ html.landscape-mode .mobile-orient-btn {
   align-items: center;
   justify-content: center;
 }
-@media (max-width: 980px), (pointer: coarse) {
+@media (max-width: 760px), (pointer: coarse) {
   .mobile-orient-btn {
     display: inline-flex;
     align-items: center;
