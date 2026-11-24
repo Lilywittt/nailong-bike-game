@@ -8,22 +8,22 @@
 //  5. Non-Lethal 1.3s Pelican Rescue Respawn & Server-Adjudicated Finish Podium
 // ============================================================================
 
-import { HEROES } from './config.js?v=8.0';
+import { HEROES } from './config.js?v=8.1';
 import {
   drawModelOn,
   drawSpaldingWheelOn,
   drawSculptedBikeAndHero,
   getHeroPortraitDataUrl
-} from './models.js?v=8.0';
+} from './models.js?v=8.1';
 import {
   drawPipMiniScenery,
   drawPipMiniTrackWorld
-} from './scenery.js?v=8.0';
+} from './scenery.js?v=8.1';
 import {
   ensureAudio,
   playVoiceSlice,
   playSfx
-} from './audio.js?v=8.0';
+} from './audio.js?v=8.1';
 
 const PARTY_PID_KEY = 'pelican_party_pid_v1';
 const PARTY_TAB_SID_KEY = 'pelican_party_tabsid_v1';
@@ -4085,13 +4085,14 @@ export function createPartyController(bridge) {
     const now = performance.now();
     const anim = rv.animState || {};
 
-    const pipW = Math.min(182, Math.max(146, Math.round(W * 0.33)));
-    const viewH = Math.round(pipW * 0.54);
-    const hdrH = 18;
-    const hpH = 17;
+    const isShortLand = H < 500 && W > H;
+    const pipW = isShortLand ? 148 : Math.min(182, Math.max(146, Math.round(W * 0.33)));
+    const viewH = isShortLand ? 70 : Math.round(pipW * 0.54);
+    const hdrH = isShortLand ? 16 : 18;
+    const hpH = isShortLand ? 15 : 17;
     const totalH = hdrH + viewH + hpH;
     const px = W - pipW - 10;
-    const py = 132;
+    const py = isShortLand ? 38 : 132;
 
     ctx.save();
     // Outer Armored Monitor Bezel

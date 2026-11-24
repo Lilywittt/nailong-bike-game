@@ -25,7 +25,7 @@ import {
   getTalentLvFromSave,
   getSuperChargeSpeedMultFromSave,
   getAutoRegenPer5sFromSave
-} from './config.js?v=8.0';
+} from './config.js?v=8.1';
 
 import {
   buildAllSculptedAssets,
@@ -34,13 +34,13 @@ import {
   drawSculptedBikeAndHero,
   getEnemySpriteKey,
   getHeroPortraitDataUrl
-} from './models.js?v=8.0';
+} from './models.js?v=8.1';
 
 import {
   drawBiomeAtmosphere,
   drawSculptedTerrainAndRoad,
   drawHubDioramaBackdrop
-} from './scenery.js?v=8.0';
+} from './scenery.js?v=8.1';
 
 import {
   ensureAudio,
@@ -55,10 +55,10 @@ import {
   stopBossBgm,
   playSfx,
   tickProceduralBgm
-} from './audio.js?v=8.0';
+} from './audio.js?v=8.1';
 
-import { createCloudStore } from './cloud.js?v=8.0';
-import { createPartyController } from './party.js?v=8.0';
+import { createCloudStore } from './cloud.js?v=8.1';
+import { createPartyController } from './party.js?v=8.1';
 import {
   initBossCustomState,
   clearBossTransientHazards,
@@ -67,7 +67,7 @@ import {
   handlePlayerBossInteraction,
   updateBossEngine,
   renderBossArenaAndModel
-} from './bosses.js?v=8.0';
+} from './bosses.js?v=8.1';
 
 // Zero-allocation in-place array compaction (eliminates 1,400+ GC array allocations/sec!)
 function compactInPlace(arr, keepFn) {
@@ -1367,18 +1367,86 @@ heroHpUpBtn.addEventListener('click', () => {
 });
 
 // ==================== VIEWPORT & WORLD STATE ====================
+// ==================== OPT-IN MOBILE LANDSCAPE & VIEWPORT ENGINE ====================
+const ORIENT_PREF_KEY = 'pelican_brawl_orient_v1';
+const hubOrientBtn = document.getElementById('hubOrientBtn');
+const hudOrientBtn = document.getElementById('hudOrientBtn');
+
+let manualLandscape = false;
+try {
+  manualLandscape = localStorage.getItem(ORIENT_PREF_KEY) === 'landscape';
+} catch (_) {}
+let isCssLandscapeRotated = false;
+
 let W = window.innerWidth;
 let H = window.innerHeight;
 let dpr = Math.min(window.devicePixelRatio || 1, 2);
 
+function refreshOrientButtonsUI() {
+  const rawW = window.innerWidth || 390;
+  const rawH = window.innerHeight || 844;
+  const autoLand = !manualLandscape && rawW > rawH && rawH <= 500;
+  if (hubOrientBtn) {
+    hubOrientBtn.textContent = manualLandscape ? '📱 竖屏版' : (autoLand ? '🔒 锁横屏' : '🔄 横屏版');
+  }
+  if (hudOrientBtn) {
+    hudOrientBtn.textContent = manualLandscape ? '📱 竖屏' : (autoLand ? '🔒 锁横屏' : '🔄 横屏');
+  }
+}
+
 function resize() {
-  W = window.innerWidth;
-  H = window.innerHeight;
+  const rawW = window.innerWidth || 390;
+  const rawH = window.innerHeight || 844;
+  const isMobileDev = Boolean(
+    (window.matchMedia && window.matchMedia('(pointer: coarse)').matches)
+    || (navigator.maxTouchPoints && navigator.maxTouchPoints > 0)
+    || Math.min(rawW, rawH) <= 980
+  );
+  const root = document.documentElement;
+  root.classList.toggle('is-mobile-device', isMobileDev);
+
+  const needCssRot = manualLandscape && rawW < rawH;
+  const useLandscapeUi = manualLandscape || (rawW > rawH && rawH <= 500);
+  isCssLandscapeRotated = needCssRot;
+  root.classList.toggle('force-landscape-rot', needCssRot);
+  root.classList.toggle('landscape-mode', useLandscapeUi);
+  root.classList.toggle('manual-landscape-on', manualLandscape);
+
+  W = needCssRot ? rawH : rawW;
+  H = needCssRot ? rawW : rawH;
   dpr = Math.min(window.devicePixelRatio || 1, 2);
   canvas.width = Math.floor(W * dpr);
   canvas.height = Math.floor(H * dpr);
+  if (hubPreviewCanvas) hubPreviewCanvas.width = 0;
+  refreshOrientButtonsUI();
 }
+
+function toggleManualLandscape() {
+  ensureAudio();
+  manualLandscape = !manualLandscape;
+  try {
+    localStorage.setItem(ORIENT_PREF_KEY, manualLandscape ? 'landscape' : 'portrait');
+  } catch (_) {}
+
+  try {
+    if (screen.orientation) {
+      if (manualLandscape && screen.orientation.lock) {
+        screen.orientation.lock('landscape').catch(() => {});
+      } else if (!manualLandscape && screen.orientation.unlock) {
+        screen.orientation.unlock();
+      }
+    }
+  } catch (_) {}
+
+  playSfx('crate');
+  resize();
+  showToast(manualLandscape ? '🔄 已切至横屏宽视野版（随时可切回竖屏）' : '📱 已切回竖屏单手版');
+}
+
+if (hubOrientBtn) hubOrientBtn.addEventListener('click', toggleManualLandscape);
+if (hudOrientBtn) hudOrientBtn.addEventListener('click', toggleManualLandscape);
 window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 80));
 resize();
 
 let pits = [];
@@ -1496,10 +1564,14 @@ function getTerrainSlope(wx) {
 
 function getCamera() {
   const isPortrait = H > W;
-  const worldScale = (isPortrait ? Math.max(0.58, Math.min(0.72, W / 535)) : Math.max(0.76, Math.min(0.95, H / 500))) * smoothCamZoom;
+  const isMobileLand = !isPortrait && H < 480;
+  const baseScale = isPortrait
+    ? Math.max(0.58, Math.min(0.72, W / 535))
+    : (isMobileLand ? Math.max(0.66, Math.min(0.84, H / 515)) : Math.max(0.76, Math.min(0.95, H / 500)));
+  const worldScale = baseScale * smoothCamZoom;
   // When 🐕 大狗嚼 chases from BEHIND, shift rider toward 0.37*W so player clearly sees rear pursuit!
   const playerScreenX = W * smoothPlayerScreenRatio;
-  const groundScreenY = isPortrait ? H * 0.66 : H * 0.70;
+  const groundScreenY = isPortrait ? H * 0.66 : (isMobileLand ? H * 0.74 : H * 0.70);
   const camX = player.x - playerScreenX / worldScale;
   const camY = smoothCamRefY * 0.38 - groundScreenY / worldScale;
   return { worldScale, camX, camY };
@@ -3505,7 +3577,8 @@ bindBtn(actionBtn, onActionPress, onActionRelease, false);
 canvas.addEventListener('pointerdown', (e) => {
   if (state !== 'PLAYING') return;
   e.preventDefault();
-  if (e.clientX < W * 0.5) { jumpHeld = true; player.jumpBufferTimer = 0.14; doJump(); }
+  const tapX = isCssLandscapeRotated ? e.clientY : e.clientX;
+  if (tapX < W * 0.5) { jumpHeld = true; player.jumpBufferTimer = 0.14; doJump(); }
   else onActionPress();
 });
 canvas.addEventListener('pointerup', () => { jumpHeld = false; onActionRelease(); });

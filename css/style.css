@@ -2648,3 +2648,259 @@ html, body {
   border-radius: 10px;
   padding: 6px 8px;
 }
+
+/* ==================== OPT-IN MOBILE LANDSCAPE ENGINE (v8.1) ==================== */
+#appStage {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.mobile-orient-btn {
+  display: none;
+}
+html.is-mobile-device .mobile-orient-btn,
+html.landscape-mode .mobile-orient-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+@media (max-width: 980px), (pointer: coarse) {
+  .mobile-orient-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+.orient-hub-pill {
+  background: linear-gradient(135deg, #e0f2fe, #dbeafe) !important;
+  color: #0369a1 !important;
+  border-color: #0284c7 !important;
+}
+html.manual-landscape-on .orient-hub-pill {
+  background: linear-gradient(135deg, #fef08a, #fde047) !important;
+  color: #854d0e !important;
+  border-color: #0f172a !important;
+}
+html.manual-landscape-on #hudOrientBtn {
+  background: linear-gradient(135deg, #fde047, #facc15);
+  color: #0f172a;
+  border-color: #0f172a;
+}
+
+/* CSS 90deg Viewport Rotation when user chooses Landscape while OS Portrait Lock is ON */
+html.force-landscape-rot #appStage {
+  inset: auto;
+  top: 0;
+  left: 0;
+  width: 100vh;
+  height: 100vw;
+  transform-origin: 0 0;
+  transform: translate(100vw, 0) rotate(90deg);
+}
+@supports (width: 100dvw) and (width: 100dvh) {
+  html.force-landscape-rot #appStage {
+    width: 100dvh;
+    height: 100dvw;
+    transform: translate(100dvw, 0) rotate(90deg);
+  }
+}
+
+/* Widescreen Mobile Landscape Layout (Fits ~844x390 cleanly with zero overlap!) */
+html.landscape-mode .overlay {
+  padding: 6px 12px;
+}
+
+html.landscape-mode .hub-card {
+  max-width: min(96%, 785px);
+  max-height: calc(100% - 8px);
+  padding: 8px 12px;
+  border-radius: 20px;
+  display: grid;
+  grid-template-columns: 1fr 1.12fr;
+  gap: 5px 10px;
+  align-items: stretch;
+}
+html.landscape-mode .hub-head {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+html.landscape-mode .hub-card .preview-box {
+  grid-column: 1;
+  grid-row: 2 / 4;
+  height: 98px;
+  min-height: 98px;
+}
+html.landscape-mode .hub-card .single-rec-hub-bar {
+  grid-column: 1;
+  grid-row: 4;
+  padding: 5px 10px;
+}
+html.landscape-mode .hub-card .srh-val {
+  font-size: 17px;
+}
+html.landscape-mode .hub-card .pvp-hub-promo-card {
+  grid-column: 1;
+  grid-row: 5 / 8;
+  padding: 7px 10px;
+  gap: 4px;
+  justify-content: space-between;
+}
+html.landscape-mode .hub-card .pvp-promo-desc {
+  font-size: 10px;
+  line-height: 1.28;
+}
+html.landscape-mode .hub-card .hero-strip {
+  grid-column: 2;
+  grid-row: 2;
+}
+html.landscape-mode .hub-card .hero-slot {
+  padding: 3px 2px 4px;
+}
+html.landscape-mode .hub-card .hero-avatar {
+  width: 28px;
+  height: 28px;
+}
+html.landscape-mode .hub-card .hero-hp-bar {
+  grid-column: 2;
+  grid-row: 3;
+  padding: 4px 8px;
+}
+html.landscape-mode .hub-card #talentHubBar {
+  grid-column: 2;
+  grid-row: 4;
+  padding: 4px 8px;
+}
+html.landscape-mode .hub-card #propShopHubBar {
+  grid-column: 2;
+  grid-row: 5;
+  padding: 4px 8px;
+}
+html.landscape-mode .hub-card .cp-strip {
+  grid-column: 2;
+  grid-row: 6;
+  min-height: 22px;
+}
+html.landscape-mode .hub-card .btn-row {
+  grid-column: 2;
+  grid-row: 7;
+}
+html.landscape-mode .hub-card .launch-btn {
+  padding: 8px 12px;
+  font-size: 15px;
+}
+html.landscape-mode .hub-card .gh-hub-mark {
+  grid-column: 1 / -1;
+  grid-row: 8;
+}
+
+/* Modals inside Landscape Stage (percentage units instead of raw vh/vw!) */
+html.landscape-mode .modal-card {
+  width: min(92%, 490px);
+  max-width: min(92%, 490px);
+  max-height: calc(100% - 12px);
+  padding: 10px 14px;
+  overflow-y: auto;
+}
+
+/* Compact In-Game Landscape HUD & Tactile Controls */
+html.landscape-mode .hud-container {
+  top: 5px;
+  left: 12px;
+  right: 12px;
+  gap: 3px;
+}
+html.landscape-mode .hp-bar-box {
+  width: min(44%, 275px);
+  height: 21px;
+}
+html.landscape-mode .hp-bar-txt {
+  font-size: 11.5px;
+}
+html.landscape-mode .super-bar-wrap {
+  width: min(34%, 190px);
+  height: 11px;
+}
+html.landscape-mode .boss-panel {
+  width: min(54%, 340px);
+  padding: 2.5px 10px;
+}
+html.landscape-mode .party-prog-hud {
+  width: min(52%, 360px);
+  padding: 3px 10px 5px;
+  gap: 3px;
+}
+html.landscape-mode .buff-strip.party-left {
+  max-width: calc(100% - 175px);
+}
+html.landscape-mode .controls-layer {
+  bottom: 8px;
+  left: 14px;
+  right: 14px;
+}
+html.landscape-mode .ctrl-left-col {
+  gap: 5px;
+}
+html.landscape-mode .medkit-btn {
+  height: 26px;
+  font-size: 10.5px;
+  padding: 0 9px;
+}
+html.landscape-mode .hyper-hold-btn,
+html.landscape-mode .party-stamina-btn {
+  height: 32px;
+  min-width: 142px;
+  font-size: 11px;
+}
+html.landscape-mode .act-btn {
+  width: 74px;
+  height: 60px;
+  border-radius: 18px;
+}
+html.landscape-mode .btn-skill {
+  width: 68px;
+  height: 56px;
+  border-radius: 17px;
+}
+html.landscape-mode .btn-icon {
+  font-size: 20px;
+}
+html.landscape-mode .btn-sub-icon {
+  font-size: 18px;
+}
+html.landscape-mode .btn-lbl {
+  font-size: 10.5px;
+  margin-top: 1px;
+}
+html.landscape-mode .party-item-bar {
+  bottom: 8px;
+}
+html.landscape-mode .party-slot-btn {
+  width: 66px;
+  height: 56px;
+  border-radius: 15px;
+}
+html.landscape-mode .pslot-ico {
+  font-size: 23px;
+}
+html.landscape-mode #quickDashWrap {
+  bottom: 78px;
+}
+html.landscape-mode .party-attack-banner {
+  top: 92px;
+  max-width: 76%;
+  font-size: 11.5px;
+  padding: 4px 12px;
+}
+html.landscape-mode .lawyer-paper {
+  width: min(52%, 290px);
+  padding: 10px 12px;
+}
+html.landscape-mode #toastPill {
+  top: 16%;
+  font-size: 13.5px;
+  padding: 4px 14px;
+}
