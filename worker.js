@@ -1994,7 +1994,7 @@ export default {
 
     if (request.method === 'GET' && STATIC_TEXT_WHITELIST[path]) {
       const entry = STATIC_TEXT_WHITELIST[path];
-      const kvKey = 'txt_v83_' + entry.file.replace(/[^a-zA-Z0-9_.-]/g, '_');
+      const kvKey = 'txt_v84_' + entry.file.replace(/[^a-zA-Z0-9_.-]/g, '_');
       const wantSync = url.searchParams.get('sync') === '1';
       let txt = wantSync ? null : await env.GAME_KV.get(kvKey);
       if (!txt) {

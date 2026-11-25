@@ -25,7 +25,7 @@ import {
   getTalentLvFromSave,
   getSuperChargeSpeedMultFromSave,
   getAutoRegenPer5sFromSave
-} from './config.js?v=8.3';
+} from './config.js?v=8.4';
 
 import {
   buildAllSculptedAssets,
@@ -34,13 +34,13 @@ import {
   drawSculptedBikeAndHero,
   getEnemySpriteKey,
   getHeroPortraitDataUrl
-} from './models.js?v=8.3';
+} from './models.js?v=8.4';
 
 import {
   drawBiomeAtmosphere,
   drawSculptedTerrainAndRoad,
   drawHubDioramaBackdrop
-} from './scenery.js?v=8.3';
+} from './scenery.js?v=8.4';
 
 import {
   ensureAudio,
@@ -55,10 +55,10 @@ import {
   stopBossBgm,
   playSfx,
   tickProceduralBgm
-} from './audio.js?v=8.3';
+} from './audio.js?v=8.4';
 
-import { createCloudStore } from './cloud.js?v=8.3';
-import { createPartyController } from './party.js?v=8.3';
+import { createCloudStore } from './cloud.js?v=8.4';
+import { createPartyController } from './party.js?v=8.4';
 import {
   initBossCustomState,
   clearBossTransientHazards,
@@ -67,7 +67,7 @@ import {
   handlePlayerBossInteraction,
   updateBossEngine,
   renderBossArenaAndModel
-} from './bosses.js?v=8.3';
+} from './bosses.js?v=8.4';
 
 // Zero-allocation in-place array compaction (eliminates 1,400+ GC array allocations/sec!)
 function compactInPlace(arr, keepFn) {
@@ -1484,32 +1484,48 @@ let lastDamageMeta = {
   tip: '善用铁山靠（电脑左键/J）可正面破盾撞怪并弹反飞行物！'
 };
 
-// ==================== INTERACTIVE 4-STEP HANDS-ON TUTORIAL STATE ====================
-const TUT_DONE_KEY = 'pelican_tutorial_done_v2';
-const TUT_REWARD_KEY = 'pelican_tutorial_reward_v2';
+// ==================== PROGRESSIVE 7-STEP ZERO-OVERLOAD FREEZE-FRAME TUTORIAL STATE (v8.4) ====================
+const TUT_DONE_KEY = 'pelican_tutorial_done_v3';
+const TUT_REWARD_KEY = 'pelican_tutorial_reward_v3';
 const tutorialCoachHud = document.getElementById('tutorialCoachHud');
 const tutStepBadge = document.getElementById('tutStepBadge');
+const tutPauseBadge = document.getElementById('tutPauseBadge');
 const tutSkipRunBtn = document.getElementById('tutSkipRunBtn');
+const tutCoachTitleTxt = document.getElementById('tutCoachTitleTxt');
 const tutCoachMainTxt = document.getElementById('tutCoachMainTxt');
+const tutCoachActionCta = document.getElementById('tutCoachActionCta');
 const tutDots = [
   document.getElementById('tutDot1'),
   document.getElementById('tutDot2'),
   document.getElementById('tutDot3'),
-  document.getElementById('tutDot4')
+  document.getElementById('tutDot4'),
+  document.getElementById('tutDot5'),
+  document.getElementById('tutDot6'),
+  document.getElementById('tutDot7')
 ];
 const hubTutorialBtn = document.getElementById('hubTutorialBtn');
 const tutorialWelcomeOverlay = document.getElementById('tutorialWelcomeOverlay');
 const tutStartWelcomeBtn = document.getElementById('tutStartWelcomeBtn');
 const tutSkipWelcomeBtn = document.getElementById('tutSkipWelcomeBtn');
+const tutorialGradOverlay = document.getElementById('tutorialGradOverlay');
+const tutGradRewardBanner = document.getElementById('tutGradRewardBanner');
+const tutGradStartRunBtn = document.getElementById('tutGradStartRunBtn');
+const tutGradHubBtn = document.getElementById('tutGradHubBtn');
 const goDeathCauseTxt = document.getElementById('goDeathCauseTxt');
 const goDeathTipTxt = document.getElementById('goDeathTipTxt');
 
 const tutorialSession = {
   active: false,
-  step: 1,
-  stepSpawned: false,
-  shotTimer: 0,
-  bulletTimeActive: false,
+  step: 1, // 1..7
+  subPhase: 'approach',
+  pausedForPrompt: false,
+  expectedInput: null, // 'jump' | 'action' | 'skill'
+  phaseTimer: 0,
+  targetX: 0,
+  pitEndX: 0,
+  bossSpawned: false,
+  bossParriedOnce: false,
+  callout: null, // { x, y, text, col }
   timeScale: 1.0,
   graduatingTimer: 0
 };
@@ -1563,7 +1579,7 @@ let partyCtrl = null;
 
 function getBaseSurfaceY(wx) {
   if (partyCtrl && partyCtrl.isActive()) return partyCtrl.getSurfaceY(wx);
-  if (wx < 380) return 0;
+  if (tutorialSession.active || wx < 380) return 0;
   const t = (wx - 380) * 0.0016;
   return Math.sin(t) * 20 + Math.sin(t * 2.1 + 1.1) * 9;
 }
@@ -2058,92 +2074,399 @@ function isPcControlHintMode() {
 
 function clearTutorialSpotlights() {
   tutorialSession.active = false;
-  tutorialSession.bulletTimeActive = false;
+  tutorialSession.pausedForPrompt = false;
+  tutorialSession.expectedInput = null;
+  tutorialSession.callout = null;
   tutorialSession.timeScale = 1.0;
   tutorialSession.graduatingTimer = 0;
+  document.documentElement.classList.remove('tutorial-clean-mode', 'tutorial-boss-stage');
   if (tutorialCoachHud) {
     tutorialCoachHud.classList.add('hidden');
     tutorialCoachHud.classList.remove('parry-alert');
   }
-  if (jumpBtn) jumpBtn.classList.remove('tut-spotlight');
-  if (actionBtn) actionBtn.classList.remove('tut-spotlight');
-  if (skillBtn) skillBtn.classList.remove('tut-spotlight');
+  if (tutPauseBadge) tutPauseBadge.classList.add('hidden');
+  if (tutorialGradOverlay) tutorialGradOverlay.classList.add('hidden');
+  for (const btn of [jumpBtn, actionBtn, skillBtn]) {
+    if (!btn) continue;
+    btn.classList.remove('tut-spotlight', 'tut-hidden-ctrl', 'tut-unlock-pop');
+  }
 }
 
-function setTutorialStepUI(stepNum) {
-  const pc = isPcControlHintMode();
-  const h = getHero();
-  if (tutStepBadge) {
-    tutStepBadge.textContent = stepNum > 4 ? '🎉 教程通关！' : `🎓 新手教程 ${stepNum}/4`;
-  }
-  for (let i = 0; i < 4; i++) {
+function syncTutorialDots(stepNum) {
+  for (let i = 0; i < tutDots.length; i++) {
     const dot = tutDots[i];
     if (!dot) continue;
     dot.classList.toggle('done', i + 1 < stepNum);
     dot.classList.toggle('active', i + 1 === stepNum);
   }
-  if (jumpBtn) jumpBtn.classList.toggle('tut-spotlight', stepNum === 1);
-  if (actionBtn) actionBtn.classList.toggle('tut-spotlight', stepNum === 2 || stepNum === 3);
-  if (skillBtn) skillBtn.classList.toggle('tut-spotlight', stepNum === 4);
-
-  if (!tutCoachMainTxt) return;
-  if (stepNum === 1) {
-    tutCoachMainTxt.innerHTML = pc
-      ? '第1步：起跳后在空中再按一次 <b>[空格键]</b>，完成<b>空中二段跳</b>吃高空绿豆！'
-      : '第1步：连按两次左下角 <b>[⬆️ 起跳]</b>（或点左半屏），完成<b>空中二段跳</b>！';
-  } else if (stepNum === 2) {
-    tutCoachMainTxt.innerHTML = pc
-      ? '第2步：靠近前方护盾怪或电网时，按 <b>[鼠标左键 / J键]</b> 使出<b>🐔 铁山靠</b>撞飞它们！'
-      : '第2步：靠近前方护盾怪或电网时，点击右下角 <b>[🐔 铁山靠]</b> 正面破盾撞飞！';
-  } else if (stepNum === 3) {
-    tutCoachMainTxt.innerHTML = pc
-      ? '第3步：前方飞来<b>📜 律师函</b>！等进入子弹时间光圈时按 <b>[鼠标左键 / J键]</b> 弹反！'
-      : '第3步：前方飞来<b>📜 律师函</b>！等进入子弹时间光圈时点 <b>[🐔 铁山靠]</b> 弹反！';
-  } else if (stepNum === 4) {
-    tutCoachMainTxt.innerHTML = pc
-      ? `第4步：按 <b>[鼠标右键 / K键]</b> 释放角色大招 <b>[${h.skillIcon || '✨'}${h.skillLbl}]</b> 清空蛙群！`
-      : `第4步：点击右侧 <b>[${h.skillIcon || '✨'} ${h.skillLbl}]</b> 释放专属大招清空蛙群！`;
-  }
 }
 
-function advanceTutorialStep(nextStep) {
+function applyProgressiveButtonVisibility(stepNum) {
+  if (jumpBtn) jumpBtn.classList.remove('tut-hidden-ctrl');
+  if (actionBtn) {
+    const wasHidden = actionBtn.classList.contains('tut-hidden-ctrl');
+    const shouldHide = stepNum < 4;
+    actionBtn.classList.toggle('tut-hidden-ctrl', shouldHide);
+    if (wasHidden && !shouldHide) {
+      actionBtn.classList.remove('tut-unlock-pop');
+      void actionBtn.offsetWidth;
+      actionBtn.classList.add('tut-unlock-pop');
+    }
+  }
+  if (skillBtn) {
+    const wasHidden = skillBtn.classList.contains('tut-hidden-ctrl');
+    const shouldHide = stepNum < 6;
+    skillBtn.classList.toggle('tut-hidden-ctrl', shouldHide);
+    if (wasHidden && !shouldHide) {
+      skillBtn.classList.remove('tut-unlock-pop');
+      void skillBtn.offsetWidth;
+      skillBtn.classList.add('tut-unlock-pop');
+    }
+  }
+  document.documentElement.classList.toggle('tutorial-boss-stage', stepNum >= 7);
+}
+
+function setTutorialCoachDisplay({ badge, title, main, cta, spotlightBtn = null, paused = false, alertGlow = false }) {
+  if (tutStepBadge && badge) tutStepBadge.textContent = badge;
+  if (tutCoachTitleTxt && title !== undefined) tutCoachTitleTxt.innerHTML = title;
+  if (tutCoachMainTxt && main !== undefined) tutCoachMainTxt.innerHTML = main;
+  if (tutCoachActionCta && cta !== undefined) {
+    tutCoachActionCta.innerHTML = cta;
+    tutCoachActionCta.classList.toggle('waiting-ride', !paused && spotlightBtn === null);
+  }
+  if (tutPauseBadge) tutPauseBadge.classList.toggle('hidden', !paused);
+  if (tutorialCoachHud) tutorialCoachHud.classList.toggle('parry-alert', Boolean(alertGlow));
+  if (jumpBtn) jumpBtn.classList.toggle('tut-spotlight', spotlightBtn === 'jump');
+  if (actionBtn) actionBtn.classList.toggle('tut-spotlight', spotlightBtn === 'action');
+  if (skillBtn) skillBtn.classList.toggle('tut-spotlight', spotlightBtn === 'skill');
+}
+
+function pauseForTutorialPrompt(expectedInput, cfg) {
+  tutorialSession.pausedForPrompt = true;
+  tutorialSession.expectedInput = expectedInput;
+  tutorialSession.timeScale = 0;
+  tutorialSession.callout = cfg.callout || null;
+  playSfx('bean');
+  setTutorialCoachDisplay({
+    badge: cfg.badge,
+    title: cfg.title,
+    main: cfg.main,
+    cta: cfg.cta,
+    spotlightBtn: expectedInput,
+    paused: true,
+    alertGlow: cfg.alertGlow !== false
+  });
+}
+
+function beginTutorialLesson(stepNum) {
   if (!tutorialSession.active) return;
-  tutorialSession.step = nextStep;
-  tutorialSession.stepSpawned = false;
-  tutorialSession.bulletTimeActive = false;
+  const pc = isPcControlHintMode();
+  const h = getHero();
+  tutorialSession.step = stepNum;
+  tutorialSession.subPhase = 'approach';
+  tutorialSession.pausedForPrompt = false;
+  tutorialSession.expectedInput = null;
+  tutorialSession.phaseTimer = 0;
+  tutorialSession.callout = null;
   tutorialSession.timeScale = 1.0;
-  tutorialSession.shotTimer = 0.25;
-  if (tutorialCoachHud) tutorialCoachHud.classList.remove('parry-alert');
-  playSfx('crate');
-  if (nextStep === 4) {
+
+  syncTutorialDots(stepNum);
+  applyProgressiveButtonVisibility(stepNum);
+
+  // Clean stray entities before setting up the next focused 1-concept lesson
+  enemies.length = 0;
+  laserGates.length = 0;
+  pits.length = 0;
+  rails.length = 0;
+  enemyShots.length = 0;
+
+  if (stepNum === 1) {
+    const tx = player.x + 310;
+    tutorialSession.targetX = tx;
+    enemies.push({ x: tx, kind: 'pelican_guard', isTutStep1: true, hit: false, phase: 0 });
+    for (let k = 0; k < 5; k++) {
+      const bx = tx - 50 + k * 26;
+      const ay = 75 + Math.sin((k / 4) * Math.PI) * 58;
+      beans.push({ x: bx, y: -ay, val: 1, giant: k === 2, taken: false });
+    }
+    setTutorialCoachDisplay({
+      badge: '🎓 基础教学 1/7',
+      title: '自动骑行与一段起跳',
+      main: '欢迎！小车会<b>自动向前行驶</b>，前方即将遇到第一个障碍，到跟前时<b>画面会自动暂停</b>教你操作……',
+      cta: '👀 请先放松观察路面，马上到教学点',
+      paused: false
+    });
+  } else if (stepNum === 2) {
+    const px = player.x + 290;
+    tutorialSession.targetX = px;
+    tutorialSession.pitEndX = px + 260;
+    pits.push({ x: px, len: 260, bridged: false, isTutPit: true });
+    rails.push({ x: px + 85, len: 245, hOff: 140, kind: 'suspenders', energizedTimer: 0 });
+    for (let k = 0; k < 5; k++) {
+      beans.push({ x: px + 105 + k * 42, y: -165, val: 1, giant: k === 2, taken: false });
+    }
+    setTutorialCoachDisplay({
+      badge: '🎓 基础教学 2/7',
+      title: '宽断桥、二段跳与高空滑轨',
+      main: '前方出现<b>超宽断桥</b>与<b>高空背带滑轨</b>，到断桥边画面会自动暂停分两步教你<b>二段跳</b>……',
+      cta: '👀 正在驶向断桥教学点……',
+      paused: false
+    });
+  } else if (stepNum === 3) {
+    const ex = player.x + 340;
+    tutorialSession.targetX = ex;
+    enemies.push({ x: ex, kind: 'dribbler', tutStep3: true, hit: false, phase: 0 });
+    setTutorialCoachDisplay({
+      badge: '🎓 基础教学 3/7',
+      title: '踩扁普通小怪',
+      main: '前方是一只没有护盾的<b>普通小怪</b>，接近时画面会暂停教你如何<b>踩头击败</b>它……',
+      cta: '👀 正在接近普通小怪……',
+      paused: false
+    });
+  } else if (stepNum === 4) {
+    playSfx('crate');
+    const ex = player.x + 320;
+    tutorialSession.targetX = ex;
+    enemies.push({ x: ex, kind: 'shield_lawyer', shielded: true, shotDone: true, tutStep4: true, hit: false, phase: 0 });
+    laserGates.push({ x: ex + 96, hacked: false, tutStep4: true });
+    setTutorialCoachDisplay({
+      badge: '⚔️ 战斗教学 4/7 · 解锁铁山靠',
+      title: '新动作解锁：【🐔 铁山靠】破盾清障',
+      main: `右下角已解锁 <b>🐔 铁山靠</b>（${pc ? '电脑端点击<b>鼠标左键</b>或<b>J键</b>' : '点击右下角橙色按钮'}），马上暂停实操破盾！`,
+      cta: '👀 正在接近持盾怪与激光电网……',
+      paused: false
+    });
+  } else if (stepNum === 5) {
+    const casterX = player.x + 540;
+    const orbX = player.x + 390;
+    tutorialSession.targetX = orbX;
+    enemies.push({ x: casterX, kind: 'shield_lawyer', shielded: true, shotDone: true, tutStep5Caster: true, hit: false, phase: 0 });
+    enemyShots.push({
+      kind: 'lawyer_orb',
+      tutorialOrb: true,
+      x: orbX,
+      y: -44,
+      targetH: 44,
+      vx: -155,
+      parried: false,
+      rot: 0
+    });
+    setTutorialCoachDisplay({
+      badge: '⚔️ 战斗教学 5/7',
+      title: '铁山靠完美弹反飞弹',
+      main: '远处敌人射出了<b>📜 律师函飞弹</b>！等飞弹飞近车头时画面会自动定格教你<b>无伤弹反</b>！',
+      cta: '👀 观察迎面飞来的律师函……',
+      paused: false
+    });
+  } else if (stepNum === 6) {
+    playSfx('crate');
     player.skillCd = 0;
     player.flameFuel = 100;
     syncControlsUI();
+    const packX = player.x + 330;
+    tutorialSession.targetX = packX;
+    const kinds = ['normal_frog', 'spiky_cat', 'boar_frog', 'dribbler'];
+    for (let k = 0; k < 4; k++) {
+      enemies.push({ x: packX + k * 46, kind: kinds[k], chargePrep: 99, tutStep6: true, hit: false, phase: k * 0.6 });
+    }
+    setTutorialCoachDisplay({
+      badge: '⚔️ 战斗教学 6/7 · 解锁大招',
+      title: `新动作解锁：角色大招【${h.skillLbl}】`,
+      main: `右侧已解锁紫色大招 <b>${h.skillIcon || '✨'} ${h.skillLbl}</b>（${pc ? '点击<b>鼠标右键</b>或<b>K键</b>' : '点击右侧紫色按钮'}），接近怪群时定格实操！`,
+      cta: '👀 正在接近前方密集怪群……',
+      paused: false
+    });
+  } else if (stepNum === 7) {
+    playSfx('crater');
+    player.skillCd = 0;
+    player.flameFuel = 100;
+    tutorialSession.bossSpawned = true;
+    tutorialSession.bossParriedOnce = false;
+    activeBoss = {
+      tier: 1, tierLbl: '陪练', tierBg: '#f59e0b',
+      kind: 'dingdong_ji', sprite: 'boss_ddj', name: '🐔 陪练叮咚鸡',
+      maxHp: 75, hp: 75,
+      dmgRate: 70, dmgBudget: 95, maxBudget: 95,
+      phase: 1, maxPhases: 1,
+      reward: 35,
+      isTutorialBoss: true,
+      worldX: player.x + 350, yOff: 0,
+      skillIdx: 0, minionTimer: 999,
+      stunTimer: 0, flashTimer: 0
+    };
+    initBossCustomState(activeBoss, player.x);
+    activeBoss.mech = 'swoop_dive';
+    activeBoss.mechSub = 1;
+    activeBoss.mechTimer = 6.0;
+    refreshBossHudUI();
+    bossHud.classList.remove('hidden');
+    syncControlsUI();
+    updateTopHUD();
+    setTutorialCoachDisplay({
+      badge: '🏆 毕业实战 7/7 · 首领破防战',
+      title: '最终实战：首领破防 + 大招秒杀！',
+      main: '顶部已显示<b>你的生命条</b>与<b>首领血条</b>！<b>🐔 陪练叮咚鸡</b>正俯冲袭来，靠近时将定格教你破防连招！',
+      cta: '👀 首领俯冲逼近中……',
+      paused: false
+    });
   }
-  setTutorialStepUI(nextStep);
+}
+
+function tryConsumeTutorialInput(kind) {
+  if (!tutorialSession.active) return true;
+  if (kind === 'hyper' || kind === 'heal') return false;
+
+  if (tutorialSession.pausedForPrompt) {
+    if (kind !== tutorialSession.expectedInput) return false;
+    tutorialSession.pausedForPrompt = false;
+    tutorialSession.expectedInput = null;
+    tutorialSession.callout = null;
+    tutorialSession.timeScale = 1.0;
+    if (tutPauseBadge) tutPauseBadge.classList.add('hidden');
+    if (tutorialCoachHud) tutorialCoachHud.classList.remove('parry-alert');
+
+    const st = tutorialSession.step;
+    if (st === 1) {
+      tutorialSession.subPhase = '1_jumped';
+      tutorialSession.phaseTimer = 0;
+      setTutorialCoachDisplay({
+        badge: '🎓 基础教学 1/7',
+        title: '漂亮！成功跃过障碍！',
+        main: '就是这样！普通低矮障碍只需跳一下就能轻松越过。',
+        cta: '✅ 落地后进入第 2 步……',
+        paused: false
+      });
+    } else if (st === 2 && tutorialSession.subPhase === 'approach') {
+      tutorialSession.subPhase = '2A_jumped';
+      tutorialSession.phaseTimer = 0;
+      setTutorialCoachDisplay({
+        badge: '🎓 基础教学 2/7（第1跳）',
+        title: '已跃入空中！准备二段跳……',
+        main: '到达空中最高点时画面会再次暂停，教你按第二次起跳！',
+        cta: '⏳ 升空中……',
+        paused: false
+      });
+    } else if (st === 2 && tutorialSession.subPhase === '2A_jumped') {
+      tutorialSession.subPhase = '2B_done';
+      tutorialSession.phaseTimer = 0;
+      setTutorialCoachDisplay({
+        badge: '🎓 基础教学 2/7（第2跳完成）',
+        title: '太棒了！成功跳上高空背带滑轨！',
+        main: '落到背带滑轨上会自动高速滑行越过断桥，同时重置跳跃次数！',
+        cta: '✅ 滑过断桥进入第 3 步……',
+        paused: false
+      });
+    } else if (st === 3) {
+      tutorialSession.subPhase = '3_jumped';
+      tutorialSession.phaseTimer = 0;
+      setTutorialCoachDisplay({
+        badge: '🎓 基础教学 3/7',
+        title: '精准起跳！看准小怪头顶踩下去！',
+        main: '踩中普通小怪头顶不仅无伤击杀，还会借力再次弹起！',
+        cta: '👟 空中下落踩头中……',
+        paused: false
+      });
+    } else if (st === 4) {
+      tutorialSession.subPhase = '4_struck';
+      tutorialSession.phaseTimer = 0;
+      setTutorialCoachDisplay({
+        badge: '⚔️ 战斗教学 4/7',
+        title: '爽快！护盾怪变保龄球撞爆电网！',
+        main: '记住：凡是<b>持盾怪、尖刺猫、激光电网、滚石大雪球</b>，全都用<b>🐔 铁山靠</b>正面轰飞！',
+        cta: '✅ 即将进入第 5 步弹反教学……',
+        paused: false
+      });
+    } else if (st === 5) {
+      tutorialSession.subPhase = '5_parried';
+      tutorialSession.phaseTimer = 0;
+      setTutorialCoachDisplay({
+        badge: '⚔️ 战斗教学 5/7',
+        title: '完美弹反！！飞弹原路抽爆敌人！',
+        main: '实战中只要右下角<b>铁山靠亮起黄光</b>，按左键就能无伤把首领或小怪的飞行物反抽回去！',
+        cta: '✅ 即将解锁角色专属大招……',
+        paused: false
+      });
+    } else if (st === 6) {
+      tutorialSession.subPhase = '6_cast';
+      tutorialSession.phaseTimer = 0;
+      setTutorialCoachDisplay({
+        badge: '⚔️ 战斗教学 6/7',
+        title: '火力全开！瞬间清空整排怪群！',
+        main: '每位角色的大招效果各不相同（车库里可自由切换 5 位角色体验）！',
+        cta: '✅ 即将迎来最终迷你首领毕业战……',
+        paused: false
+      });
+    } else if (st === 7) {
+      tutorialSession.subPhase = '7_free_combat';
+      tutorialSession.bossParriedOnce = true;
+      player.skillCd = 0;
+      player.flameFuel = 100;
+      const pc = isPcControlHintMode();
+      setTutorialCoachDisplay({
+        badge: '🏆 毕业实战 7/7 · 趁眩晕输出！',
+        title: '叮咚鸡已破防眩晕！快开大招终结它！',
+        main: '首领被弹反后陷入<b>破防眩晕</b>，此时释放<b>角色大招</b>可造成 <b>140% 暴击伤害</b>！现在自由操作击败它！',
+        cta: pc ? '🔥 按 <b>[鼠标右键 / K键]</b> 释放大招（也可左键追击）击败叮咚鸡！' : '🔥 点击右侧紫色 <b>[角色大招]</b> 击败叮咚鸡！',
+        spotlightBtn: 'skill',
+        paused: false,
+        alertGlow: true
+      });
+    }
+    return true;
+  }
+
+  // When NOT paused for prompt: allow free combat in Step 7 after guard-break, or skill hold in Step 6;
+  // during calm 0.8s approach to a teaching freeze-point, hold inputs steady so the lesson freezes cleanly!
+  if (tutorialSession.step === 7 && tutorialSession.subPhase === '7_free_combat') {
+    return kind === 'jump' || kind === 'action' || kind === 'skill';
+  }
+  if (tutorialSession.step === 6 && tutorialSession.subPhase === '6_cast' && kind === 'skill') {
+    return true;
+  }
+  return false;
+}
+
+function openTutorialGraduationModal() {
+  let firstReward = false;
+  try {
+    if (!localStorage.getItem(TUT_REWARD_KEY)) {
+      localStorage.setItem(TUT_REWARD_KEY, '1');
+      firstReward = true;
+    }
+    localStorage.setItem(TUT_DONE_KEY, '1');
+  } catch (_) {}
+
+  if (firstReward) {
+    runStats.beans += 300;
+    bankRunProgress(true);
+    if (tutGradRewardBanner) {
+      tutGradRewardBanner.textContent = '🎁 首次毕业奖励 +300 🌿 绿豆已入账！';
+    }
+  } else if (tutGradRewardBanner) {
+    tutGradRewardBanner.textContent = '✨ 温习通关！全部核心连招手感已拉满！';
+  }
+
+  clearTutorialSpotlights();
+  state = 'PAUSED';
+  playSfx('crate');
+  if (tutorialGradOverlay) tutorialGradOverlay.classList.remove('hidden');
 }
 
 function completeTutorialHandoffToLiveRun(skipped = false) {
   try { localStorage.setItem(TUT_DONE_KEY, '1'); } catch (_) {}
   clearTutorialSpotlights();
-  enemyShots.length = 0;
-  player.hp = player.maxHp;
-  player.displayHp = player.maxHp;
-  player.trailHp = player.maxHp;
-  player.invulnTimer = 1.8;
-  nextSpawnX = Math.max(nextSpawnX, player.x + 420);
-  nextBossDist = runStats.dist + 145;
-  nextTruckDist = runStats.dist + 165;
-  nextPropDist = runStats.dist + 55;
-  nextShieldDist = runStats.dist + 260;
-  nextHealDist = runStats.dist + 340;
-  updateTopHUD();
-  syncControlsUI();
-  showToast(skipped ? '🏁 已结束教学 · 直接进入正式狂飙挑战！' : '🚀 教学毕业 · 无缝进入正式狂飙挑战！');
+  if (skipped) {
+    finishRunAndOpenHub();
+    showToast('🏠 已退出新手教学，随时可点顶栏【🎓 教程】重温！');
+    return;
+  }
+  startNewRun(store.save.selectedHero, 0, 0);
+  showToast('🚀 正式挑战发车！冲刺单命最高纪录吧！');
 }
 
 function startTutorialRun() {
   if (tutorialWelcomeOverlay) tutorialWelcomeOverlay.classList.add('hidden');
+  if (tutorialGradOverlay) tutorialGradOverlay.classList.add('hidden');
   if (partyCtrl && partyCtrl.isActive()) {
     partyCtrl.exitPartyToHub();
   }
@@ -2164,164 +2487,234 @@ function startTutorialRun() {
   nextHealDist = 999999;
 
   tutorialSession.active = true;
-  tutorialSession.step = 1;
-  tutorialSession.stepSpawned = false;
-  tutorialSession.shotTimer = 0;
-  tutorialSession.bulletTimeActive = false;
-  tutorialSession.timeScale = 1.0;
   tutorialSession.graduatingTimer = 0;
+  document.documentElement.classList.add('tutorial-clean-mode');
+  document.documentElement.classList.remove('tutorial-boss-stage');
 
   if (tutorialCoachHud) {
     tutorialCoachHud.classList.remove('hidden');
     tutorialCoachHud.classList.remove('parry-alert');
   }
   if (toastPill) toastPill.classList.remove('show');
-  setTutorialStepUI(1);
+  beginTutorialLesson(1);
 }
 
 function tickTutorialDirector(realDt) {
   if (!tutorialSession.active || state !== 'PLAYING') return;
-  nextBossDist = runStats.dist + 300;
-  nextTruckDist = runStats.dist + 300;
+  nextBossDist = 999999;
+  nextTruckDist = 999999;
+  nextPropDist = 999999;
   player.hp = player.maxHp;
+  player.displayHp = player.maxHp;
+  player.trailHp = player.maxHp;
+
+  if (tutorialSession.pausedForPrompt) return;
 
   if (tutorialSession.graduatingTimer > 0) {
     tutorialSession.graduatingTimer -= realDt;
     if (tutorialSession.graduatingTimer <= 0) {
-      completeTutorialHandoffToLiveRun(false);
+      openTutorialGraduationModal();
     }
     return;
   }
 
+  const pc = isPcControlHintMode();
+  const h = getHero();
   const st = tutorialSession.step;
+
   if (st === 1) {
-    // Keep high-altitude bean arches ahead so player has a fun target to double-jump into
-    let hasBeansAhead = false;
-    for (let i = 0; i < beans.length; i++) {
-      if (!beans[i].taken && beans[i].x > player.x + 80) { hasBeansAhead = true; break; }
-    }
-    if (!hasBeansAhead) {
-      const startX = player.x + 260;
-      for (let k = 0; k < 7; k++) {
-        const bx = startX + k * 38;
-        const arcH = 125 + Math.sin((k / 6) * Math.PI) * 85;
-        beans.push({ x: bx, y: getBaseSurfaceY(bx) - arcH, val: 1, giant: k === 3, taken: false });
+    if (tutorialSession.subPhase === 'approach') {
+      if (tutorialSession.targetX - player.x <= 142 && player.onGround) {
+        pauseForTutorialPrompt('jump', {
+          badge: '🎓 基础教学 1/7 · 已暂停',
+          title: '第 1 步：一段起跳越过障碍',
+          main: '小车会自动向前骑行。遇到前方矮路障时，只需<b>起跳一次</b>就能轻松从上方跃过！',
+          cta: pc ? '👉 请按键盘 <b>[空格键]</b>（或 W / ↑）起跳' : '👉 请点击左下角发光的 <b>[⬆️ 起跳]</b> 按钮',
+          callout: { x: tutorialSession.targetX, y: -92, text: '⚠️ 拦路障碍 · 起跳越过', col: '#fde047' }
+        });
+      }
+    } else if (tutorialSession.subPhase === '1_jumped') {
+      if (player.vy < 0) jumpHeld = true; // Guarantee full smooth arc even on a brief tap
+      if (player.x > tutorialSession.targetX + 85 && player.onGround) {
+        jumpHeld = false;
+        tutorialSession.phaseTimer += realDt;
+        if (tutorialSession.phaseTimer >= 0.45) {
+          addPopup('👏 一段跳掌握！', player.x + 28, player.y - 96, '#4ade80', 19);
+          beginTutorialLesson(2);
+        }
       }
     }
     return;
   }
 
   if (st === 2) {
-    // Keep a tutorial shield_lawyer + laserGate ahead; detect when player smashes either with 铁山靠!
-    let smashedTutTarget = false;
-    let liveTutAhead = false;
-    for (let i = 0; i < enemies.length; i++) {
-      const en = enemies[i];
-      if (en.tutStep2) {
-        if (en.hit) smashedTutTarget = true;
-        else if (en.x > player.x - 10) liveTutAhead = true;
+    if (tutorialSession.subPhase === 'approach') {
+      if (tutorialSession.targetX - player.x <= 54 && player.onGround) {
+        pauseForTutorialPrompt('jump', {
+          badge: '🎓 基础教学 2/7（第1跳）· 已暂停',
+          title: '第 2 步（上）：遇到宽断桥先起跳',
+          main: '前方是<b>超宽断桥</b>（掉下去会扣血），上方架着<b>背带滑轨</b>。一段跳不够远，我们先按<b>第一次起跳</b>跃入空中！',
+          cta: pc ? '👉 先按一次 <b>[空格键]</b> 跃向空中' : '👉 先点一次左下角 <b>[⬆️ 起跳]</b> 按钮',
+          callout: { x: tutorialSession.targetX + 105, y: -38, text: '🕳️ 超宽断桥 · 掉入扣血！', col: '#fb7185' }
+        });
       }
-    }
-    for (let i = 0; i < laserGates.length; i++) {
-      const lg = laserGates[i];
-      if (lg.tutStep2) {
-        if (lg.hacked && player.strikeTimer > 0) smashedTutTarget = true;
-        else if (!lg.hacked && lg.x > player.x - 10) liveTutAhead = true;
+    } else if (tutorialSession.subPhase === '2A_jumped') {
+      jumpHeld = true;
+      tutorialSession.phaseTimer += realDt;
+      if (tutorialSession.phaseTimer >= 0.24 || player.y <= -96) {
+        jumpHeld = false;
+        pauseForTutorialPrompt('jump', {
+          badge: '🎓 基础教学 2/7（第2跳）· 空中定格',
+          title: '第 2 步（下）：空中再按一次触发二段跳！',
+          main: '角色在<b>半空中还能再跳第二次</b>！现在再按起跳，就能稳稳跃上高空<b>背带滑轨</b>滑过断桥！',
+          cta: pc ? '👉 在空中<b>再按一次 [空格键]</b> 二段跳！' : '👉 在空中<b>再点一次 [⬆️ 起跳]</b> 二段跳！',
+          callout: { x: tutorialSession.targetX + 150, y: -182, text: '✨ 高空背带滑轨 · 二段跳踩上去！', col: '#4ade80' }
+        });
       }
-    }
-    if (smashedTutTarget) {
-      addPopup('✅ 铁山靠破盾掌握!!', player.x + 36, player.y - 108, '#4ade80', 20);
-      advanceTutorialStep(3);
-      return;
-    }
-    if (!liveTutAhead) {
-      const tx = player.x + 310;
-      enemies.push({
-        x: tx,
-        kind: 'shield_lawyer',
-        shielded: true,
-        shotDone: true,
-        hit: false,
-        tutStep2: true,
-        phase: 0
-      });
-      laserGates.push({ x: tx + 115, hacked: false, tutStep2: true });
+    } else if (tutorialSession.subPhase === '2B_done') {
+      if (player.vy < -180) jumpHeld = true;
+      else jumpHeld = false;
+      if (player.x > tutorialSession.pitEndX + 85 && player.onGround) {
+        tutorialSession.phaseTimer += realDt;
+        if (tutorialSession.phaseTimer >= 0.40) {
+          addPopup('👏 二段跳与滑轨掌握！', player.x + 32, player.y - 98, '#4ade80', 19);
+          beginTutorialLesson(3);
+        }
+      }
     }
     return;
   }
 
   if (st === 3) {
-    const pc = isPcControlHintMode();
-    let liveOrb = null;
-    for (let i = 0; i < enemyShots.length; i++) {
-      const sh = enemyShots[i];
-      if (sh.tutorialOrb && !sh.dead && !sh.parried) {
-        if (sh.x < player.x - 25) {
-          sh.dead = true;
-        } else {
-          liveOrb = sh;
-          break;
-        }
-      }
-    }
-    if (!liveOrb) {
-      tutorialSession.bulletTimeActive = false;
-      tutorialSession.timeScale = 1.0;
-      if (tutorialCoachHud) tutorialCoachHud.classList.remove('parry-alert');
-      tutorialSession.shotTimer -= realDt;
-      if (tutorialSession.shotTimer <= 0) {
-        const ox = player.x + 430;
-        enemyShots.push({
-          kind: 'lawyer_orb',
-          tutorialOrb: true,
-          x: ox,
-          y: getBaseSurfaceY(ox) - 46,
-          targetH: 46,
-          vx: -125,
-          parried: false,
-          rot: 0
+    const en = enemies.find((e) => e.tutStep3);
+    if (tutorialSession.subPhase === 'approach') {
+      if (en && !en.hit && en.x - player.x <= 198 && player.onGround) {
+        pauseForTutorialPrompt('jump', {
+          badge: '🎓 基础教学 3/7 · 已暂停',
+          title: '第 3 步：踩头击败普通小怪',
+          main: '遇到<b>没有护盾和尖刺</b>的普通小怪时，跳起来落到它<b>头顶</b>就能直接踩扁它，还会弹起爆出绿豆！',
+          cta: pc ? '👉 按 <b>[空格键]</b> 跳起踩扁前方小怪！' : '👉 点击 <b>[⬆️ 起跳]</b> 跳起踩扁前方小怪！',
+          callout: { x: en.x, y: -92, text: '👟 普通小怪 · 可从头顶踩扁！', col: '#38bdf8' }
         });
-        tutorialSession.shotTimer = 1.1;
-        setTutorialStepUI(3);
       }
-    } else {
-      const dist = Math.hypot(liveOrb.x - (player.x + 28), liveOrb.y - (player.y - 46));
-      if (dist < 198 && liveOrb.x >= player.x - 8) {
-        if (!tutorialSession.bulletTimeActive) {
-          tutorialSession.bulletTimeActive = true;
-          playSfx('bean');
-          if (tutorialCoachHud) tutorialCoachHud.classList.add('parry-alert');
-          if (tutCoachMainTxt) {
-            tutCoachMainTxt.innerHTML = pc
-              ? '⚡ <b>子弹时间触发！现在立刻按 [鼠标左键 / J键] 完美弹反！！</b>'
-              : '⚡ <b>子弹时间触发！现在立刻点击 [🐔 铁山靠] 完美弹反！！</b>';
-          }
+    } else if (tutorialSession.subPhase === '3_jumped') {
+      tutorialSession.phaseTimer += realDt;
+      if (tutorialSession.phaseTimer > 0.05) jumpHeld = false; // Crisp stomp arc landing right at +198px!
+      if (!en || en.hit) {
+        if (player.onGround) {
+          addPopup('👏 踩头连击掌握！', player.x + 28, player.y - 96, '#4ade80', 19);
+          beginTutorialLesson(4);
         }
-        tutorialSession.timeScale = 0.22;
-      } else {
-        tutorialSession.bulletTimeActive = false;
-        tutorialSession.timeScale = 1.0;
-        if (tutorialCoachHud) tutorialCoachHud.classList.remove('parry-alert');
+      } else if (player.x > en.x + 55 && player.onGround) {
+        // Gentle auto-retry if missed
+        beginTutorialLesson(3);
       }
     }
     return;
   }
 
   if (st === 4) {
-    player.skillCd = 0;
-    if (getHero().id === 'nailong') player.flameFuel = Math.max(player.flameFuel, 85);
-    let liveFrogs = 0;
-    for (let i = 0; i < enemies.length; i++) {
-      if (!enemies[i].hit && enemies[i].x > player.x - 10) liveFrogs++;
+    const en = enemies.find((e) => e.tutStep4);
+    if (tutorialSession.subPhase === 'approach') {
+      if (en && !en.hit && en.x - player.x <= 132 && player.onGround) {
+        pauseForTutorialPrompt('action', {
+          badge: '⚔️ 战斗教学 4/7 · 新按键已暂停',
+          title: '第 4 步：【🐔 铁山靠】破盾与清电网',
+          main: '前方的<b>持盾律师、尖刺猫、激光电网</b>不能踩头硬撞！使用新解锁的<b>🐔 铁山靠</b>可正面把护盾怪当保龄球撞飞并轰碎电网！',
+          cta: pc ? '👉 点击 <b>[鼠标左键]</b>（或按键盘 <b>[J键]</b>）使出铁山靠！' : '👉 点击右下角发光的 <b>[🐔 铁山靠]</b> 按钮！',
+          callout: { x: en.x + 35, y: -102, text: '🛡️ 持盾怪 + ⚡电网 · 铁山靠撞飞！', col: '#fb923c' }
+        });
+      }
+    } else if (tutorialSession.subPhase === '4_struck') {
+      tutorialSession.phaseTimer += realDt;
+      if (tutorialSession.phaseTimer >= 0.85) {
+        addPopup('👏 铁山靠破盾掌握！', player.x + 32, player.y - 98, '#4ade80', 19);
+        beginTutorialLesson(5);
+      }
     }
-    if (liveFrogs < 2) {
-      const fx = player.x + 255;
-      for (let k = 0; k < 4; k++) {
-        enemies.push({
-          x: fx + k * 48,
-          kind: k % 2 === 0 ? 'normal_frog' : 'dribbler',
-          hit: false,
-          phase: k * 0.7
+    return;
+  }
+
+  if (st === 5) {
+    const orb = enemyShots.find((s) => s.tutorialOrb && !s.dead);
+    if (tutorialSession.subPhase === 'approach') {
+      if (orb && !orb.parried && orb.x - player.x <= 145) {
+        pauseForTutorialPrompt('action', {
+          badge: '⚔️ 战斗教学 5/7 · 飞弹定格',
+          title: '第 5 步：【🐔 铁山靠】完美弹反飞弹！',
+          main: '敌人发射的<b>📜 律师函</b>已飞到车头前！此时使出<b>🐔 铁山靠</b>不仅完全免伤，还能把飞弹<b>反抽回去</b>秒杀远处敌人！',
+          cta: pc ? '👉 点击 <b>[鼠标左键]</b>（或按 <b>[J键]</b>）完美弹反！' : '👉 点击右下角发光的 <b>[🐔 铁山靠]</b> 完美弹反！',
+          callout: { x: orb.x, y: orb.y - 46, text: '📜 敌方飞弹 · 按铁山靠弹反！', col: '#4ade80' }
+        });
+      } else if (!orb) {
+        beginTutorialLesson(5);
+      }
+    } else if (tutorialSession.subPhase === '5_parried') {
+      tutorialSession.phaseTimer += realDt;
+      if (tutorialSession.phaseTimer >= 0.90) {
+        addPopup('👏 完美弹反掌握！', player.x + 32, player.y - 98, '#4ade80', 19);
+        beginTutorialLesson(6);
+      }
+    }
+    return;
+  }
+
+  if (st === 6) {
+    const firstMob = enemies.find((e) => e.tutStep6 && !e.hit);
+    if (tutorialSession.subPhase === 'approach') {
+      if (firstMob && firstMob.x - player.x <= 165 && player.onGround) {
+        pauseForTutorialPrompt('skill', {
+          badge: '⚔️ 战斗教学 6/7 · 大招定格',
+          title: `第 6 步：释放角色专属大招【${h.skillLbl}】`,
+          main: '面对成群怪物或尖刺怪时，使用右侧紫色<b>角色专属大招</b>可瞬间大范围清场！（奶龙可按住持续喷火）',
+          cta: pc ? '👉 点击 <b>[鼠标右键]</b>（或按键盘 <b>[K键]</b>）释放大招！' : `👉 点击右侧发光的 <b>[${h.skillIcon || '✨'} ${h.skillLbl}]</b> 按钮！`,
+          callout: { x: firstMob.x + 65, y: -98, text: '👾 密集怪群 · 开大招一键清场！', col: '#c084fc' }
+        });
+      }
+    } else if (tutorialSession.subPhase === '6_cast') {
+      tutorialSession.phaseTimer += realDt;
+      if (tutorialSession.phaseTimer >= 1.05) {
+        addPopup('👏 角色大招掌握！', player.x + 32, player.y - 98, '#4ade80', 19);
+        beginTutorialLesson(7);
+      }
+    }
+    return;
+  }
+
+  if (st === 7) {
+    if (tutorialSession.subPhase === 'approach' && activeBoss) {
+      // Glide Tutorial Dingdong Ji smoothly toward parry distance (player.x + 158)
+      activeBoss.mech = 'swoop_dive';
+      activeBoss.mechSub = 1;
+      activeBoss.mechTimer = 5.0;
+      const targetBossX = player.x + 152;
+      activeBoss.worldX = Math.max(targetBossX, activeBoss.worldX + (player.vx - 210) * realDt);
+      activeBoss.yOff = -18;
+      if (activeBoss.worldX - player.x <= 162 && player.onGround) {
+        pauseForTutorialPrompt('action', {
+          badge: '🏆 毕业实战 7/7 · 首领定格',
+          title: '第 7 步：首领冲撞破防 + 大招秒杀！',
+          main: '首领 <b>🐔 陪练叮咚鸡</b> 正发起俯冲攻击！先用 <b>🐔 铁山靠</b> 将它<b>弹反打晕</b>，再接<b>角色大招</b>灌满 140% 暴击伤害！',
+          cta: pc ? '👉 第一招：点击 <b>[鼠标左键 / J键]</b> 弹反打晕叮咚鸡！' : '👉 第一招：点击右下角 <b>[🐔 铁山靠]</b> 弹反打晕叮咚鸡！',
+          callout: { x: activeBoss.worldX, y: -125, text: '🐔 首领俯冲 · 按铁山靠破防打晕！', col: '#fde047' }
+        });
+      }
+    } else if (tutorialSession.subPhase === '7_free_combat') {
+      player.skillCd = 0;
+      if (h.id === 'nailong') player.flameFuel = Math.max(player.flameFuel, 85);
+      if (activeBoss) {
+        // Keep stunned tutorial boss right in front of player so skill/strikes land 100% reliably!
+        activeBoss.stunTimer = Math.max(activeBoss.stunTimer, 1.5);
+        activeBoss.worldX = player.x + 165;
+        activeBoss.yOff = 0;
+      } else if (tutorialSession.bossSpawned && tutorialSession.graduatingTimer <= 0) {
+        tutorialSession.graduatingTimer = 0.75;
+        setTutorialCoachDisplay({
+          badge: '🎉 恭喜击败首领！',
+          title: '太强了！陪练叮咚鸡已被彻底击溃！',
+          main: '你已经完整学会了《鹈鹕测试大乱斗》的所有核心技巧！',
+          cta: '🎁 正在发放 +300🌿 新手毕业奖励……',
+          paused: false
         });
       }
     }
@@ -2513,7 +2906,7 @@ function refreshHealSupplyUI() {
 }
 
 function tryBuyInRunHealSupply() {
-  if (partyCtrl && partyCtrl.isActive()) return;
+  if (tutorialSession.active || (partyCtrl && partyCtrl.isActive())) return;
   if (state !== 'PLAYING' && state !== 'PAUSED') return;
   ensureAudio();
   const used = runStats.healBuysUsed || 0;
@@ -3491,7 +3884,7 @@ function getBossCallbacks() {
 
 // Hold-to-Ram Invincible Hyper Dash (with anti-slip pointer capture, 0.24s grace & empty->pause shop!)
 function onHyperDashPress() {
-  if ((partyCtrl && partyCtrl.isActive()) || state !== 'PLAYING' || headStartTargetDist > 0) return;
+  if (tutorialSession.active || (partyCtrl && partyCtrl.isActive()) || state !== 'PLAYING' || headStartTargetDist > 0) return;
   ensureAudio();
   const curE = Math.min(30, Math.max(0, Number(store.save.dashEnergy) || 0));
   if (curE <= 0.05) {
@@ -3538,6 +3931,7 @@ function forceStopHyperDash() {
 
 function doJump() {
   if (state !== 'PLAYING' || headStartTargetDist > 0) return;
+  if (!tryConsumeTutorialInput('jump')) return;
   ensureAudio();
   if (activeBoss && superBonusTimer <= 0 && handlePlayerBossInteraction(activeBoss, getBossCallbacks(), 'jump')) {
     syncControlsUI();
@@ -3566,10 +3960,6 @@ function doJump() {
       color: h.id === 'hakimi' ? '#fda4af' : '#bae6fd',
       harmless: true
     }, 12);
-    if (tutorialSession.active && tutorialSession.step === 1) {
-      addPopup('✅ 二段跳掌握!!', player.x + 28, player.y - 98, '#4ade80', 20);
-      advanceTutorialStep(2);
-    }
     syncControlsUI();
   }
 }
@@ -3663,10 +4053,6 @@ function tryExecuteParrySweep() {
       hitStopTimer = 0.05; shakeTime = 0.20; shakeMag = 10;
       playSfx('parry');
       addPopup('🐔 铁山靠弹反!!', sh.x, sh.y - 44, '#fde047', 20);
-      if (tutorialSession.active && tutorialSession.step === 3) {
-        addPopup('⚡ 完美弹反掌握!!', player.x + 36, player.y - 116, '#4ade80', 21);
-        advanceTutorialStep(4);
-      }
     }
   }
   return didParry;
@@ -3674,6 +4060,7 @@ function tryExecuteParrySweep() {
 
 function onActionPress() {
   if (state !== 'PLAYING' || headStartTargetDist > 0) return;
+  if (!tryConsumeTutorialInput('action')) return;
   ensureAudio();
   actionHeld = true;
 
@@ -3827,37 +4214,10 @@ function fireNailoongFlamePulse(dtSlice) {
 
 function onSkillPress() {
   if (state !== 'PLAYING' || headStartTargetDist > 0) return;
+  if (!tryConsumeTutorialInput('skill')) return;
   ensureAudio();
   const h = getHero();
   player.skillHeld = true;
-
-  if (tutorialSession.active && tutorialSession.step === 4 && tutorialSession.graduatingTimer <= 0) {
-    tutorialSession.graduatingTimer = 1.35;
-    let firstReward = false;
-    try {
-      if (!localStorage.getItem(TUT_REWARD_KEY)) {
-        localStorage.setItem(TUT_REWARD_KEY, '1');
-        firstReward = true;
-      }
-      localStorage.setItem(TUT_DONE_KEY, '1');
-    } catch (_) {}
-    if (firstReward) {
-      runStats.beans += 300;
-      bankRunProgress(true);
-      spawnBeanFountain(player.x + 56, player.y - 54, 12, 2);
-      addPopup('🎓 教程首通 +300🌿!!', player.x + 42, player.y - 125, '#4ade80', 22);
-      if (tutCoachMainTxt) {
-        tutCoachMainTxt.innerHTML = '🎉 <b>全套连招掌握！首通奖励 +300 🌿 已入账，即将无缝发车！</b>';
-      }
-    } else {
-      spawnBeanFountain(player.x + 56, player.y - 54, 6, 1);
-      addPopup('🎓 教学通关!!', player.x + 42, player.y - 125, '#fde047', 21);
-      if (tutCoachMainTxt) {
-        tutCoachMainTxt.innerHTML = '🎉 <b>手感热身完成！即将无缝切入正式挑战！</b>';
-      }
-    }
-    setTutorialStepUI(5);
-  }
 
   if (activeBoss && superBonusTimer <= 0) {
     handlePlayerBossInteraction(activeBoss, getBossCallbacks(), 'skill');
@@ -3866,7 +4226,7 @@ function onSkillPress() {
   if (h.id === 'nailong') {
     if (player.flameFuel > 8) {
       player.flameHolding = true;
-      player.flameBurstTimer = 0.95;
+      player.flameBurstTimer = tutorialSession.active ? 1.35 : 0.95;
       playSfx('slash');
       playGentleSkillAccent('nailong', Boolean(activeBoss));
       fireNailoongFlamePulse(0.08);
@@ -4044,6 +4404,7 @@ window.addEventListener('keydown', (e) => {
     || (shareOverlay && !shareOverlay.classList.contains('hidden'))
     || (rechargeOverlay && !rechargeOverlay.classList.contains('hidden'))
     || (tutorialWelcomeOverlay && !tutorialWelcomeOverlay.classList.contains('hidden'))
+    || (tutorialGradOverlay && !tutorialGradOverlay.classList.contains('hidden'))
     || (partyCtrl && partyCtrl.isModalOpen());
   if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || anyModalOpen) {
     if (e.code === 'Escape') {
@@ -4058,10 +4419,18 @@ window.addEventListener('keydown', (e) => {
         try { localStorage.setItem(TUT_DONE_KEY, '1'); } catch (_) {}
         tutorialWelcomeOverlay.classList.add('hidden');
       }
+      if (tutorialGradOverlay && !tutorialGradOverlay.classList.contains('hidden')) {
+        tutorialGradOverlay.classList.add('hidden');
+        finishRunAndOpenHub();
+      }
       if (partyCtrl) partyCtrl.closeModalsOnEsc();
     } else if (tutorialWelcomeOverlay && !tutorialWelcomeOverlay.classList.contains('hidden') && (e.code === 'Space' || e.code === 'Enter')) {
       e.preventDefault();
       startTutorialRun();
+    } else if (tutorialGradOverlay && !tutorialGradOverlay.classList.contains('hidden') && (e.code === 'Space' || e.code === 'Enter')) {
+      e.preventDefault();
+      tutorialGradOverlay.classList.add('hidden');
+      completeTutorialHandoffToLiveRun(false);
     }
     return;
   }
@@ -4631,6 +5000,11 @@ function update(realDt) {
   if (hitStopTimer > 0) { hitStopTimer -= realDt; return; }
 
   tickTutorialDirector(realDt);
+  if (tutorialSession.active && tutorialSession.pausedForPrompt) {
+    syncControlsUI();
+    updateTopHUD();
+    return;
+  }
   const dt = (tutorialSession.active ? tutorialSession.timeScale : 1.0) * realDt;
   const h = getHero();
 
@@ -4739,7 +5113,7 @@ function update(realDt) {
     player.strikeTimer -= realDt;
     for (let i = 0; i < enemies.length; i++) {
       const en = enemies[i];
-      if (en.hit || en.swallowing) continue;
+      if (en.hit || en.swallowing || en.isTutStep1) continue;
       const ey = getEnemyWorldY(en);
       const dx = en.x - player.x;
       if (dx > -35 && dx < 205 && Math.abs((ey - 24) - (player.y - 38)) < 98) {
@@ -5003,7 +5377,7 @@ function update(realDt) {
     }
     for (let i = 0; i < enemies.length; i++) {
       const en = enemies[i];
-      if (en.hit || en.swallowing) continue;
+      if (en.hit || en.swallowing || en.isTutStep1) continue;
       const ey = getEnemyWorldY(en);
       if (en.x > player.x - 15 && en.x < player.x + 440 && Math.abs((ey - 24) - (player.y - 52)) < 180) {
         en.swallowing = true;
@@ -5611,7 +5985,7 @@ function update(realDt) {
   let parryGlow = false;
   let jumpGlow = false;
 
-  if (activeBoss && superBonusTimer <= 0 && !activeBoss.pinnedByHyper) {
+  if (activeBoss && superBonusTimer <= 0 && !activeBoss.pinnedByHyper && !(tutorialSession.active && activeBoss.isTutorialBoss)) {
     activeBoss.dmgBudget = Math.min(activeBoss.maxBudget, activeBoss.dmgBudget + activeBoss.dmgRate * dt);
     if (activeBoss.flashTimer > 0) activeBoss.flashTimer -= realDt;
 
@@ -5650,7 +6024,7 @@ function update(realDt) {
   if (superBonusTimer <= 0) {
     for (let i = 0; i < enemies.length; i++) {
       const en = enemies[i];
-      if (en.hit || en.swallowing) continue;
+      if (en.hit || en.swallowing || en.isTutStep1) continue;
       const distAhead = en.x - player.x;
       if (en.kind === 'drone' && grad.tier >= 2 && distAhead < 680 && distAhead > -80) {
         if (en.baseFlyH === undefined) en.baseFlyH = en.flyH || 112;
@@ -5790,7 +6164,7 @@ function update(realDt) {
     const hitW = player.giantTimer > 0 ? 68 : 36;
     for (let i = 0; i < enemies.length; i++) {
       const en = enemies[i];
-      if (en.hit || en.swallowing) continue;
+      if (en.hit || en.swallowing || en.isTutStep1) continue;
       const ey = getEnemyWorldY(en);
       if (Math.abs(en.x - player.x) < hitW && Math.abs((ey - 22) - (player.y - 34)) < hitW) {
         if (player.giantTimer > 0 || player.rocketDashTimer > 0 || headStartTargetDist > 0) {
@@ -6440,32 +6814,48 @@ function render() {
     partyCtrl.renderWorldPostPlayer(ctx, startWX, endWX);
   }
 
-  // Tutorial Step 3 Visual Parry Zone & Bullet-Time Lock-On Ring!
-  if (tutorialSession.active && tutorialSession.step === 3) {
+  // Tutorial Freeze-Frame World Callout Tag & Target Reticle!
+  if (tutorialSession.active && tutorialSession.pausedForPrompt && tutorialSession.callout) {
+    const c = tutorialSession.callout;
     const nowT = performance.now();
-    const hot = tutorialSession.bulletTimeActive;
+    const bob = Math.sin(nowT * 0.008) * 5;
     ctx.save();
-    ctx.strokeStyle = hot ? '#4ade80' : 'rgba(250, 204, 21, 0.72)';
-    ctx.fillStyle = hot ? 'rgba(74, 222, 128, 0.14)' : 'rgba(250, 204, 21, 0.07)';
-    ctx.lineWidth = hot ? 5 : 3;
-    ctx.setLineDash(hot ? [] : [10, 8]);
+    // Crisp pulsing reticle ring around the target
+    ctx.strokeStyle = c.col || '#fde047';
+    ctx.lineWidth = 4;
+    ctx.setLineDash([8, 6]);
     ctx.beginPath();
-    ctx.arc(player.x + 28, player.y - 46, 195 + Math.sin(nowT * 0.01) * 6, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.arc(c.x, c.y + 42, 42 + Math.sin(nowT * 0.01) * 4, 0, Math.PI * 2);
     ctx.stroke();
     ctx.setLineDash([]);
-    if (hot) {
-      for (let i = 0; i < enemyShots.length; i++) {
-        const sh = enemyShots[i];
-        if (sh.tutorialOrb && !sh.dead && !sh.parried) {
-          ctx.strokeStyle = '#fde047';
-          ctx.lineWidth = 4;
-          ctx.beginPath();
-          ctx.arc(sh.x, sh.y, 34 + Math.sin(nowT * 0.02) * 5, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-      }
-    }
+
+    // Floating high-contrast callout pill with downward pointer arrow
+    ctx.font = '900 15px -apple-system, "PingFang SC", sans-serif';
+    const tw = ctx.measureText(c.text).width;
+    const pw = tw + 24;
+    const ph = 30;
+    const px = c.x - pw * 0.5;
+    const py = c.y - 22 + bob;
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+    ctx.strokeStyle = c.col || '#fde047';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.roundRect(px, py, pw, ph, 10);
+    ctx.fill();
+    ctx.stroke();
+    // Pointer triangle
+    ctx.beginPath();
+    ctx.moveTo(c.x - 7, py + ph);
+    ctx.lineTo(c.x + 7, py + ph);
+    ctx.lineTo(c.x, py + ph + 9);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = c.col || '#fde047';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(c.text, c.x, py + ph * 0.5 + 0.5);
     ctx.restore();
   }
 
@@ -6810,6 +7200,20 @@ if (tutSkipWelcomeBtn) {
     playSfx('bean');
     try { localStorage.setItem(TUT_DONE_KEY, '1'); } catch (_) {}
     if (tutorialWelcomeOverlay) tutorialWelcomeOverlay.classList.add('hidden');
+  });
+}
+if (tutGradStartRunBtn) {
+  tutGradStartRunBtn.addEventListener('click', () => {
+    ensureAudio();
+    if (tutorialGradOverlay) tutorialGradOverlay.classList.add('hidden');
+    completeTutorialHandoffToLiveRun(false);
+  });
+}
+if (tutGradHubBtn) {
+  tutGradHubBtn.addEventListener('click', () => {
+    ensureAudio();
+    if (tutorialGradOverlay) tutorialGradOverlay.classList.add('hidden');
+    finishRunAndOpenHub();
   });
 }
 
