@@ -3276,3 +3276,87 @@ html.landscape-mode .tut-action-cta {
   }
 }
 
+/* ==================== v8.8 PVP PROGRESSIVE FREEZE-FRAME TUTORIAL ==================== */
+.pvp-tut-promo-pill {
+  background: linear-gradient(135deg, #fde047, #f59e0b);
+  color: #0f172a;
+  border: 2px solid #0f172a;
+  border-radius: 999px;
+  padding: 2.5px 10px;
+  font-size: 11.5px;
+  font-weight: 900;
+  cursor: pointer;
+  box-shadow: 0 2px 0 #0f172a, 0 0 12px rgba(250, 204, 21, 0.55);
+  white-space: nowrap;
+  transition: transform 0.1s ease;
+}
+.pvp-tut-promo-pill:hover {
+  filter: brightness(1.06);
+}
+.pvp-tut-promo-pill:active {
+  transform: translateY(1px);
+  box-shadow: 0 1px 0 #0f172a;
+}
+
+.party-tut-cta {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 2.5px solid #0f172a;
+  background: linear-gradient(135deg, #fef08a, #fbbf24);
+  color: #0f172a;
+  font-size: 13.8px;
+  font-weight: 900;
+  cursor: pointer;
+  box-shadow: 0 3px 0 #0f172a;
+}
+.party-tut-cta:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 #0f172a;
+}
+
+.pvp-grad-card {
+  max-width: 425px;
+  border-color: #eab308;
+  background: linear-gradient(180deg, #fefce8 0%, #ffffff 100%);
+}
+
+html.pvp-tutorial-mode:not(.pvp-tut-stamina-unlocked) #partyStaminaBtn {
+  display: none !important;
+}
+html.pvp-tutorial-mode:not(.pvp-tut-items-unlocked) #partyItemBar {
+  display: none !important;
+}
+
+html.pvp-tutorial-mode .tutorial-coach-hud {
+  top: max(68px, calc(env(safe-area-inset-top, 8px) + 60px));
+}
+html.pvp-tutorial-mode.tutorial-hp-unlocked .tutorial-coach-hud {
+  top: max(108px, calc(env(safe-area-inset-top, 8px) + 100px));
+}
+html.pvp-tutorial-mode .party-attack-banner {
+  top: max(258px, calc(env(safe-area-inset-top, 8px) + 250px));
+  z-index: 37;
+}
+html.landscape-mode.pvp-tutorial-mode .party-attack-banner {
+  top: auto;
+  bottom: 72px;
+}
+@media (min-width: 760px) and (max-width: 1140px) {
+  html.pvp-tutorial-mode .tutorial-coach-hud {
+    left: 16px;
+    transform: none;
+    width: min(57%, 455px);
+  }
+}
+html.landscape-mode.pvp-tutorial-mode .tutorial-coach-hud {
+  left: 14px;
+  transform: none;
+  top: 48px;
+  width: min(56%, 430px);
+}
+html.landscape-mode.pvp-tutorial-mode.tutorial-hp-unlocked .tutorial-coach-hud {
+  top: 66px;
+}
+
+

@@ -8,22 +8,22 @@
 //  5. Non-Lethal 1.3s Pelican Rescue Respawn & Server-Adjudicated Finish Podium
 // ============================================================================
 
-import { HEROES } from './config.js?v=8.7';
+import { HEROES } from './config.js?v=8.8';
 import {
   drawModelOn,
   drawSpaldingWheelOn,
   drawSculptedBikeAndHero,
   getHeroPortraitDataUrl
-} from './models.js?v=8.7';
+} from './models.js?v=8.8';
 import {
   drawPipMiniScenery,
   drawPipMiniTrackWorld
-} from './scenery.js?v=8.7';
+} from './scenery.js?v=8.8';
 import {
   ensureAudio,
   playVoiceSlice,
   playSfx
-} from './audio.js?v=8.7';
+} from './audio.js?v=8.8';
 
 const PARTY_PID_KEY = 'pelican_party_pid_v1';
 const PARTY_TAB_SID_KEY = 'pelican_party_tabsid_v1';
@@ -222,6 +222,7 @@ export function createPartyController(bridge) {
   const partyNickInp = document.getElementById('partyNickInp');
   const partyLobbyEntryView = document.getElementById('partyLobbyEntryView');
   const partyLobbyWaitView = document.getElementById('partyLobbyWaitView');
+  const partyLobbyTutorialBtn = document.getElementById('partyLobbyTutorialBtn');
   const partyQuickMatchBtn = document.getElementById('partyQuickMatchBtn');
   const partyInstantBotBtn = document.getElementById('partyInstantBotBtn');
   const partyCreateCodeInp = document.getElementById('partyCreateCodeInp');
@@ -434,7 +435,23 @@ export function createPartyController(bridge) {
     myItemsLanded: 0,
     myItemsUsed: 0,
     results: [],
-    rewardClaimed: false
+    rewardClaimed: false,
+
+    // Offline Deterministic 7-Step PvP Tutorial State
+    isTutorial: false,
+    tutStep: 0,
+    tutShowPip: false,
+    tutSpotlightPip: false,
+    tutAutoHoldStamina: 0,
+    tutElapsedMs: 0,
+    tutForceItem: '',
+    tutRivalOffset: 115,
+    tutRivalRecoverTimer: 0,
+    tutRingCleared: false,
+    tutStep4HitDone: false,
+    tutStep5ReflectedDone: false,
+    tutStep6KoDone: false,
+    tutCrossedFinish: false
   };
 
   // ==================== DETERMINISTIC SPLICED TRACK BUILDER ====================
@@ -886,7 +903,8 @@ export function createPartyController(bridge) {
       bridge.addPopup('+8🌿', p.x + 20, p.y - 96, '#4ade80', 17);
       return;
     }
-    const picked = rollRubberBandedItem();
+    const picked = (party.isTutorial && party.tutForceItem) ? party.tutForceItem : rollRubberBandedItem();
+    if (party.isTutorial && party.tutForceItem) party.tutForceItem = '';
     party.slots[emptyIdx] = picked;
     renderItemSlotsUI();
     const def = PARTY_MEME_ITEMS[picked];
@@ -1099,6 +1117,9 @@ export function createPartyController(bridge) {
     if (party.status !== 'racing' || party.localFinished) return false;
     const itemId = party.slots[slotIdx];
     if (!itemId) return false;
+    if (party.isTutorial && bridge.tryConsumePartyTutorialInput) {
+      if (!bridge.tryConsumePartyTutorialInput(slotIdx === 0 ? 'pvp_slot0' : 'pvp_slot1')) return false;
+    }
 
     party.slots[slotIdx] = null;
     party.myItemsUsed += 1;
@@ -1193,6 +1214,17 @@ export function createPartyController(bridge) {
             party.whipArcs.push({ owner: 'rival', idx: k, life: 0.34, maxLife: 0.34 });
           }
         }
+        if (party.isTutorial && party.rival) {
+          party.rival.hp = Math.max(25, (party.rival.hp || 100) - 55);
+          party.rival.animState = { ...(party.rival.animState || {}), toonTruck: itemId === 'truck_isekai' };
+          party.tutRivalRecoverTimer = 1.45;
+          party.rivalHitFlash = 0.95;
+          party.tutStep4HitDone = true;
+          playSfx('crate');
+          playSfx('parry');
+          party.hitMarkers.push({ target: 'rival', text: '💥 -55 HP!', color: '#fde047', life: 1.15 });
+          bridge.addPopup('🎯 泥头车暴击对手 -55HP!!', p.x + 28, p.y - 122, '#fde047', 21);
+        }
       });
     }
 
@@ -1202,12 +1234,27 @@ export function createPartyController(bridge) {
     return true;
   }
 
+  function triggerTutorialRivalKO(label = '💥 重击') {
+    if (!party.rival) return;
+    party.rival.hp = 0;
+    party.rival.vx = 55;
+    party.rival.animState = { onGround: true, koCrawl: true };
+    party.rivalHitFlash = 1.15;
+    party.tutStep6KoDone = true;
+    playSfx('crate');
+    playSfx('parry');
+    showPartyBanner(`💀 ${label}打空对手生命！阿坤加速清零进入龟速爬行！`, 2300);
+    party.hitMarkers.push({ target: 'rival', text: '💀 击倒龟速!', color: '#fde047', life: 1.35 });
+  }
+
   function tryMeleeShoulderBump() {
     if (!party.active || party.status !== 'racing' || party.localFinished) return false;
     if (party.meleeBumpCd > 0 || !party.rival || !party.rivalRender.hasData) return false;
     const p = bridge.player;
     const rr = party.rivalRender;
-    if (Math.abs(rr.x - p.x) > 86 || Math.abs(rr.y - p.y) > 74) return false;
+    const maxDX = party.isTutorial ? 175 : 86;
+    const maxDY = party.isTutorial ? 105 : 74;
+    if (Math.abs(rr.x - p.x) > maxDX || Math.abs(rr.y - p.y) > maxDY) return false;
 
     party.meleeBumpCd = 1.6;
     party.myItemsUsed += 1;
@@ -1220,6 +1267,9 @@ export function createPartyController(bridge) {
     });
     bridge.addPopup('💥 贴脸铁山靠!!', p.x + 22, p.y - 108, '#fde047', 21);
     party.hitMarkers.push({ target: 'rival', text: '💥 撞飞!', color: '#fde047', life: 0.85 });
+    if (party.isTutorial && party.tutStep === 6) {
+      triggerTutorialRivalKO('🐔 贴脸铁山靠');
+    }
     party.outgoingEvents.push({
       eventId: `bump_${playerId}_${Date.now()}`,
       itemId: 'melee_bump'
@@ -1269,7 +1319,8 @@ export function createPartyController(bridge) {
     if (!party.active || party.status !== 'racing' || party.localFinished) return false;
     if (party.heroSkillHitCd > 0 || !party.rival || !party.rivalRender.hasData) return false;
     const rr = party.rivalRender;
-    if (Math.hypot(rr.x - wx, (rr.y - 46) - wy) > rad) return false;
+    const effRad = (party.isTutorial && party.tutStep === 6) ? (rad + 75) : rad;
+    if (Math.hypot(rr.x - wx, (rr.y - 46) - wy) > effRad) return false;
 
     party.heroSkillHitCd = 0.38;
     party.myItemsUsed += 1;
@@ -1280,6 +1331,9 @@ export function createPartyController(bridge) {
       x: rr.x, y: rr.y - 46, r: 16, maxR: 230, life: 0.30, color: '#ef4444', harmless: true
     });
     party.hitMarkers.push({ target: 'rival', text: `${skillLabel} -${dmg}HP!`, color: '#fb7185', life: 0.95 });
+    if (party.isTutorial && party.tutStep === 6) {
+      triggerTutorialRivalKO(skillLabel);
+    }
     party.outgoingEvents.push({
       eventId: `sk_${playerId}_${Date.now()}_${party.myItemsUsed}`,
       itemId: 'hero_skill_hit',
@@ -1337,7 +1391,18 @@ export function createPartyController(bridge) {
       w.shockwaves.push({ x: p.x, y: p.y - 46, r: 18, maxR: 320, life: 0.4, color: '#facc15', harmless: false });
       bridge.addPopup('🥘 纯路人反弹!!', p.x + 18, p.y - 104, '#facc15', 22);
       spawnSculptedChaosBarrage('me', 'rival', itemId);
-      launchHomingMissileVisual('rival', itemId);
+      launchHomingMissileVisual('rival', itemId, () => {
+        if (party.isTutorial && party.rival) {
+          party.rival.hp = 20;
+          party.rivalRender.bballTimer = 2.0;
+          spawnBasketballRainVisual('rival');
+          party.rivalHitFlash = 0.95;
+          party.tutStep5ReflectedDone = true;
+          playSfx('crate');
+          party.hitMarkers.push({ target: 'rival', text: '🥘 反弹 -25HP!', color: '#fde047', life: 1.15 });
+          bridge.addPopup('🎯 铁锅反弹坑翻阿坤!!', p.x + 26, p.y - 122, '#fde047', 21);
+        }
+      });
       bridge.refreshBuffChips();
       return;
     }
@@ -1817,6 +1882,20 @@ export function createPartyController(bridge) {
     if (partyPodiumOverlay) partyPodiumOverlay.classList.add('hidden');
 
     party.active = true;
+    party.isTutorial = Boolean(data.isTutorial);
+    party.tutStep = 0;
+    party.tutShowPip = !party.isTutorial;
+    party.tutSpotlightPip = false;
+    party.tutAutoHoldStamina = 0;
+    party.tutElapsedMs = 0;
+    party.tutForceItem = '';
+    party.tutRivalOffset = 115;
+    party.tutRivalRecoverTimer = 0;
+    party.tutRingCleared = false;
+    party.tutStep4HitDone = false;
+    party.tutStep5ReflectedDone = false;
+    party.tutStep6KoDone = false;
+    party.tutCrossedFinish = false;
     party.status = data.status === 'racing' ? 'racing' : 'countdown';
     party.raceDist = Number(data.raceDist) || 3500;
     party.trackSeed = Number(data.trackSeed) || 123456;
@@ -1947,7 +2026,11 @@ export function createPartyController(bridge) {
     buildTrackSegments(party.modulePlan, party.raceDist, party.trackSeed);
     const heroId = bridge.store.save.selectedHero || 'nailong';
     bridge.startPartyRunSetup(heroId);
-    spawnTrackAhead(120);
+    if (!party.isTutorial) {
+      spawnTrackAhead(120);
+    } else {
+      for (const seg of party.segments) seg.spawned = true;
+    }
 
     setHudPartyVisibility(true);
     renderItemSlotsUI();
@@ -1958,12 +2041,14 @@ export function createPartyController(bridge) {
       if (partyRivalPinLbl) partyRivalPinLbl.textContent = party.rival.nickname.slice(0, 5);
     }
 
-    raceSyncTimer = setInterval(triggerPartySyncNow, 115);
-    triggerPartySyncNow();
+    if (!party.isTutorial) {
+      raceSyncTimer = setInterval(triggerPartySyncNow, 115);
+      triggerPartySyncNow();
+    }
   }
 
   async function triggerPartySyncNow() {
-    if (!party.active || !party.roomCode || syncInFlight) return;
+    if (!party.active || party.isTutorial || !party.roomCode || syncInFlight) return;
     syncInFlight = true;
 
     const p = bridge.player;
@@ -2335,7 +2420,7 @@ export function createPartyController(bridge) {
     const nowSrv = estServerNow();
 
     // 1. Pre-Start Synchronized 3..2..1..GO! Countdown
-    const remMs = party.startAtMs - nowSrv;
+    const remMs = party.isTutorial ? 0 : (party.startAtMs - nowSrv);
     if (remMs > 0) {
       party.status = 'countdown';
       p.x = 120;
@@ -2461,6 +2546,10 @@ export function createPartyController(bridge) {
 
     if (party.staminaExhaustCd > 0) {
       party.staminaExhaustCd = Math.max(0, party.staminaExhaustCd - realDt);
+    }
+    if (party.tutAutoHoldStamina > 0) {
+      party.tutAutoHoldStamina = Math.max(0, party.tutAutoHoldStamina - realDt);
+      party.staminaHeld = party.tutAutoHoldStamina > 0;
     }
     const canHoldSprint = !party.localFinished
       && fx.respawnTimer <= 0
@@ -2636,7 +2725,7 @@ export function createPartyController(bridge) {
 
     // 3B. Chasing-Shadows Style Sky-Falling Meme Props (金钟罩 + 叮咚鸡血 + 南北绿豆 + 辣条喷射 + 唱跳飞翼)!
     const curRunM = Math.max(0, (p.x - 120) / 18);
-    while (curRunM + 34 >= party.nextSkyDropDist && party.nextSkyDropDist < party.raceDist - 35) {
+    while (!party.isTutorial && curRunM + 34 >= party.nextSkyDropDist && party.nextSkyDropDist < party.raceDist - 35) {
       const idx = party.skyDropCount++;
       const rSeed = hashTrackSegSeed(party.trackSeed + 777, idx);
       const rng = createSeededRng(rSeed);
@@ -2746,6 +2835,7 @@ export function createPartyController(bridge) {
       if (rg.cd > 0) rg.cd = Math.max(0, rg.cd - realDt);
       if (rg.cd <= 0 && !party.localFinished && Math.hypot(p.x - rg.x, (p.y - 42) - rg.y) < 58) {
         rg.cd = 1.6;
+        if (rg.isTutRing) party.tutRingCleared = true;
         fx.roadPadBoostTimer = Math.max(fx.roadPadBoostTimer, rg.isGold ? 2.05 : 1.55);
         party.stamina = Math.min(100, party.stamina + (rg.isGold ? 12 : 8));
         p.vy = Math.min(p.vy, rg.isGold ? -220 : -165);
@@ -2813,6 +2903,23 @@ export function createPartyController(bridge) {
     }
 
     // 6. Smooth Zero-Teleport Rival Dead-Reckoning + 14-Node Verlet Spring-Damper Rope Physics!
+    if (party.isTutorial && party.rival) {
+      if (party.tutRivalRecoverTimer > 0) {
+        party.tutRivalRecoverTimer = Math.max(0, party.tutRivalRecoverTimer - realDt);
+        if (party.tutRivalRecoverTimer <= 0 && party.rival.animState) {
+          party.rival.animState.toonTruck = false;
+        }
+      }
+      if (party.rival.animState && (party.rival.animState.koCrawl || party.rival.animState.toonTruck)) {
+        party.rival.vx = 65;
+        party.rival.x = (party.rival.x || p.x) + 65 * realDt;
+      } else {
+        const desiredRivalX = Math.min(party.finishX - 110, p.x + party.tutRivalOffset);
+        party.rival.x += (desiredRivalX - party.rival.x) * Math.min(1, realDt * 4.8);
+        party.rival.vx = p.vx;
+      }
+      party.rival.dist = Math.max(0, (party.rival.x - 120) / 18);
+    }
     if (party.rival && party.rivalRender.hasData) {
       const rv = party.rival;
       const rr = party.rivalRender;
@@ -2963,7 +3070,8 @@ export function createPartyController(bridge) {
     const curMeters = Math.max(0, (p.x - 120) / 18);
     const nextBossSlot = party.bossTriggeredIdx + 1;
     if (
-      !party.localFinished
+      !party.isTutorial
+      && !party.localFinished
       && nextBossSlot < party.bossTriggerDists.length
       && curMeters >= party.bossTriggerDists[nextBossSlot]
       && bridge.spawnPartyRaceBoss
@@ -2973,10 +3081,11 @@ export function createPartyController(bridge) {
       bridge.spawnPartyRaceBoss(party.trackSeed + nextBossSlot * 5);
     }
 
-    // 8. Check Crossing 2000m Finish Arch!
+    // 8. Check Crossing Finish Arch!
     if (!party.localFinished && curMeters >= party.raceDist) {
       party.localFinished = true;
       party.finishedClientMs = Math.round(estServerNow());
+      party.tutCrossedFinish = true;
       p.invulnTimer = 15.0;
       playSfx('crate');
       const cols = ['#fde047', '#ec4899', '#38bdf8', '#4ade80', '#f97316'];
@@ -2992,10 +3101,15 @@ export function createPartyController(bridge) {
           life: 2.8
         });
       }
-      triggerPartySyncNow();
+      if (!party.isTutorial) {
+        triggerPartySyncNow();
+      }
     }
 
-    const elapsedMs = Math.max(0, nowSrv - party.startAtMs);
+    if (party.isTutorial && !party.localFinished) {
+      party.tutElapsedMs += realDt * 1000;
+    }
+    const elapsedMs = party.isTutorial ? party.tutElapsedMs : Math.max(0, nowSrv - party.startAtMs);
     updatePartyHudBar(elapsedMs);
   }
 
@@ -4079,6 +4193,7 @@ export function createPartyController(bridge) {
   // Real-Time 60FPS Top-Right Rival Picture-in-Picture Camera + Prominent Rival HP Bar!
   function renderRivalLivePipAndHp(ctx, W, H) {
     if (!party.active || !party.rival || !party.rivalRender.hasData) return;
+    if (party.isTutorial && !party.tutShowPip) return;
     const rv = party.rival;
     const rr = party.rivalRender;
     const p = bridge.player;
@@ -4093,9 +4208,18 @@ export function createPartyController(bridge) {
     const hpH = isShortLand ? 15 : 17;
     const totalH = hdrH + viewH + hpH;
     const px = W - pipW - 10;
-    const py = isShortLand ? 38 : 132;
+    const py = isShortLand ? 46 : (party.isTutorial ? (W < 820 ? 268 : 72) : 132);
 
     ctx.save();
+    if (party.tutSpotlightPip) {
+      ctx.strokeStyle = '#fde047';
+      ctx.lineWidth = 4;
+      ctx.setLineDash([8, 5]);
+      ctx.beginPath();
+      ctx.roundRect(px - 6, py - 6, pipW + 12, totalH + 12, 16);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
     // Outer Armored Monitor Bezel
     ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
     ctx.strokeStyle = party.rivalHitFlash > 0 ? '#fde047' : '#ec4899';
@@ -4721,7 +4845,7 @@ export function createPartyController(bridge) {
   }
 
   function exitPartyToHub() {
-    if (party.roomCode) {
+    if (party.roomCode && !party.isTutorial) {
       fetch('/api/party/leave', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4731,6 +4855,7 @@ export function createPartyController(bridge) {
     }
     clearPartyTimers();
     party.active = false;
+    party.isTutorial = false;
     party.roomCode = '';
     party.status = 'idle';
     party.slots = [null, null];
@@ -4741,8 +4866,174 @@ export function createPartyController(bridge) {
     bridge.returnToHubFromParty();
   }
 
+  function activateStaminaHold(wantHold) {
+    if (wantHold && party.isTutorial && bridge.tryConsumePartyTutorialInput) {
+      if (!bridge.tryConsumePartyTutorialInput('pvp_stamina')) return false;
+      party.tutAutoHoldStamina = 1.15;
+    }
+    party.staminaHeld = Boolean(wantHold) || party.tutAutoHoldStamina > 0;
+    return true;
+  }
+
+  function startPvpTutorialSession() {
+    closeLobbyModal();
+    const myHero = bridge.store.save.selectedHero || 'nailong';
+    const rivalHero = myHero === 'ikun' ? 'nailong' : 'ikun';
+    launchPartyRaceSession({
+      isTutorial: true,
+      status: 'racing',
+      raceDist: 920,
+      trackSeed: 202688,
+      modulePlan: ['start_launchpad', 'final_sprint'],
+      startAtMs: estServerNow() - 500,
+      rival: {
+        playerId: 'tut_bot_ikun',
+        nickname: '陪练阿坤',
+        heroId: rivalHero,
+        hp: 100,
+        x: 235,
+        y: 0,
+        vx: 356,
+        dist: 6.4,
+        animState: { onGround: true }
+      }
+    });
+    party.rivalRender.hasData = true;
+    party.rivalRender.x = 235;
+    party.rivalRender.y = getSurfaceY(235);
+    party.rivalRender.vx = 356;
+  }
+
+  function configurePvpTutorialStep(stepNum) {
+    if (!party.active || !party.isTutorial) return null;
+    const p = bridge.player;
+    const w = bridge.getWorldArrays();
+    party.tutStep = stepNum;
+    w.enemies.length = 0;
+    w.laserGates.length = 0;
+    w.pits.length = 0;
+    w.rails.length = 0;
+    w.lilyPads.length = 0;
+    w.cashTrucks.length = 0;
+    party.crates.length = 0;
+    party.boostRings.length = 0;
+    party.boostPads.length = 0;
+    party.homingMissiles.length = 0;
+
+    if (stepNum === 1) {
+      party.tutShowPip = false;
+      party.tutSpotlightPip = false;
+      party.tutRingCleared = false;
+      party.tutRivalOffset = 118;
+      const ringX = p.x + 295;
+      addBoostRing(ringX, 118, true);
+      party.boostRings[party.boostRings.length - 1].isTutRing = true;
+      addBeanArc(w.beans, ringX - 65, 5, 32, 82, 52, 2);
+      return { targetX: ringX };
+    }
+    if (stepNum === 2) {
+      party.stamina = 100;
+      party.staminaTrail = 100;
+      party.staminaExhaustCd = 0;
+      party.tutRivalOffset = 195;
+      if (party.rival) party.rival.x = Math.max(party.rival.x, p.x + 175);
+      return { targetX: p.x + 160 };
+    }
+    if (stepNum === 3) {
+      party.tutShowPip = true;
+      party.tutSpotlightPip = true;
+      party.tutRingCleared = false;
+      party.tutRivalOffset = 255;
+      const padX = p.x + 295;
+      w.lilyPads.push({ x: padX, yOff: 26, anim: 0 });
+      addBoostRing(padX + 115, 145, false);
+      party.boostRings[party.boostRings.length - 1].isTutRing = true;
+      addBeanArc(w.beans, padX + 20, 5, 34, 96, 66, 2);
+      return { targetX: padX };
+    }
+    if (stepNum === 4) {
+      party.tutSpotlightPip = false;
+      party.tutStep4HitDone = false;
+      party.slots = [null, null];
+      renderItemSlotsUI();
+      party.tutForceItem = 'truck_isekai';
+      party.tutRivalOffset = 275;
+      const crateX = p.x + 168;
+      addCrate(crateX, 42);
+      return { targetX: crateX };
+    }
+    if (stepNum === 5) {
+      party.tutStep5ReflectedDone = false;
+      party.tutRivalRecoverTimer = 0;
+      if (party.rival && party.rival.animState) party.rival.animState.toonTruck = false;
+      party.tutRivalOffset = 245;
+      party.slots = [null, 'pan_shield'];
+      renderItemSlotsUI();
+      showPartyBanner('⚠️ 来袭预警：陪练阿坤释放 🏀 篮球陨石雨！', 2600);
+      playSfx('chime', 3);
+      spawnSculptedChaosBarrage('rival', 'me', 'bball_rain');
+      launchHomingMissileVisual('me', 'bball_rain', () => {
+        if (party.fx.panShieldTimer <= 0 && party.isTutorial && party.tutStep === 5) {
+          // Safeguard: never punish in tutorial, re-fire if needed
+          configurePvpTutorialStep(5);
+          return;
+        }
+        applyDirectHitEffectOnMe('bball_rain', false, 25, false);
+      });
+      return { targetX: p.x + 220 };
+    }
+    if (stepNum === 6) {
+      party.tutStep6KoDone = false;
+      party.meleeBumpCd = 0;
+      party.heroSkillHitCd = 0;
+      party.tutRivalOffset = 58;
+      if (party.rival) {
+        party.rival.hp = 20;
+        party.rival.x = p.x + 76;
+        party.rival.animState = { onGround: true, koCrawl: false, toonTruck: false };
+      }
+      party.rivalRender.x = p.x + 76;
+      party.rivalRender.y = getSurfaceY(p.x + 76);
+      return { targetX: p.x + 76 };
+    }
+    if (stepNum === 7) {
+      party.tutCrossedFinish = false;
+      const finX = p.x + 310;
+      party.finishX = finX;
+      party.raceDist = Math.max(50, Math.round((finX - 120) / 18));
+      if (partyFinishLbl) partyFinishLbl.textContent = `🏁${party.raceDist}m`;
+      party.fx.roadPadBoostTimer = 2.2;
+      addBoostPad(p.x + 40, 180, 0);
+      return { targetX: finX };
+    }
+    return null;
+  }
+
+  function getPvpTutorialState() {
+    const incoming = party.homingMissiles.find((m) => m.target === 'me') || null;
+    return {
+      slot0: party.slots[0],
+      slot1: party.slots[1],
+      staminaBoosting: party.staminaBoosting,
+      ringCleared: party.tutRingCleared,
+      step4HitDone: party.tutStep4HitDone,
+      step5ReflectedDone: party.tutStep5ReflectedDone,
+      step6KoDone: party.tutStep6KoDone,
+      crossedFinish: party.tutCrossedFinish,
+      rivalX: party.rivalRender.x,
+      rivalY: party.rivalRender.y,
+      incomingMissile: incoming ? { x: incoming.curX, y: incoming.curY, prog: incoming.prog } : null
+    };
+  }
+
   // Bind UI Events
   if (partyOpenBtn) partyOpenBtn.addEventListener('click', openLobbyModal);
+  if (partyLobbyTutorialBtn) {
+    partyLobbyTutorialBtn.addEventListener('click', () => {
+      closeLobbyModal();
+      if (bridge.startPvpTutorialFromParty) bridge.startPvpTutorialFromParty();
+    });
+  }
   if (partyLobbyCloseBtn) partyLobbyCloseBtn.addEventListener('click', closeLobbyModal);
   if (partyLobbyOverlay) {
     partyLobbyOverlay.addEventListener('click', (e) => {
@@ -4820,11 +5111,11 @@ export function createPartyController(bridge) {
       if (partyStaminaBtn.setPointerCapture && e && e.pointerId !== undefined) {
         try { partyStaminaBtn.setPointerCapture(e.pointerId); } catch (_) {}
       }
-      party.staminaHeld = true;
+      activateStaminaHold(true);
     };
     const stopHold = (e) => {
       if (e && e.cancelable) e.preventDefault();
-      party.staminaHeld = false;
+      activateStaminaHold(false);
     };
     partyStaminaBtn.addEventListener('pointerdown', startHold);
     partyStaminaBtn.addEventListener('pointerup', stopHold);
@@ -4892,7 +5183,15 @@ export function createPartyController(bridge) {
     closeModalsOnEsc: () => {
       if (partyLobbyOverlay && !partyLobbyOverlay.classList.contains('hidden')) closeLobbyModal();
     },
-    setStaminaHeld: (v) => { party.staminaHeld = Boolean(v); },
+    setStaminaHeld: (v) => { activateStaminaHold(Boolean(v)); },
+    startPvpTutorialSession,
+    configurePvpTutorialStep,
+    getPvpTutorialState,
+    openLobbyModal,
+    startInstantBotMatch: async () => {
+      openLobbyModal();
+      await handleInstantBotStart();
+    },
     getSurfaceY,
     getSpeedMultiplier,
     getRopeSpeedDelta: () => (party.active ? (party.ropePullVx || 0) : 0),
