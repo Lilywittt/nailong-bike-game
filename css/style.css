@@ -535,6 +535,19 @@ html, body {
 }
 
 /* ==================== GARAGE HUB OVERLAY ==================== */
+.overlay,
+.hub-card, .hub-card *,
+.modal-card, .modal-card *,
+.tut-course-list, .tut-course-list * {
+  touch-action: auto;
+}
+.hub-card,
+.modal-card,
+.rank-list-box,
+.talent-list-box {
+  -webkit-overflow-scrolling: touch;
+}
+
 .overlay {
   position: fixed;
   inset: 0;
@@ -551,21 +564,21 @@ html, body {
 
 .hub-card {
   width: 100%;
-  max-width: 412px;
-  max-height: 96vh;
-  max-height: 96dvh;
+  max-width: 476px;
+  max-height: 97vh;
+  max-height: 97dvh;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
   background: #fffbeb;
   border: 3.5px solid #0f172a;
-  border-radius: 24px;
-  padding: 10px 12px;
+  border-radius: 22px;
+  padding: 7px 10px 8px;
   color: #0f172a;
-  box-shadow: 0 8px 0 #0f172a, 0 20px 45px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 7px 0 #0f172a, 0 18px 40px rgba(0, 0, 0, 0.45);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 .hub-card > *,
 .modal-card > * {
@@ -575,32 +588,56 @@ html, body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 5px;
+  flex-wrap: nowrap;
+  gap: 4px;
+  min-width: 0;
 }
 .hub-logo {
-  font-size: 16px;
+  font-size: 13.2px;
   font-weight: 900;
   white-space: nowrap;
   flex-shrink: 0;
+}
+@media (max-width: 447px) {
+  .hub-head {
+    flex-wrap: wrap;
+    gap: 3px 4px;
+  }
+  .hub-logo {
+    font-size: 12.5px;
+  }
+  .hub-head-right {
+    width: 100%;
+    flex-wrap: nowrap !important;
+    justify-content: space-between !important;
+    gap: 2px !important;
+  }
+  .hub-head-right .cloud-pill-btn,
+  .hub-head-right .wallet-chip,
+  .hub-head-right .recharge-pill-btn {
+    padding: 2px 4.5px !important;
+    font-size: 9.8px !important;
+    max-width: 68px;
+  }
 }
 .wallet-chip {
   background: #dcfce7;
   color: #166534;
   font-weight: 900;
-  font-size: 12.5px;
-  padding: 3px 8px;
+  font-size: 10.8px;
+  padding: 2px 6px;
   border-radius: 999px;
-  border: 2px solid #166534;
+  border: 1.8px solid #166534;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .preview-box {
   position: relative;
-  height: 102px;
-  min-height: 102px;
+  height: 74px;
+  min-height: 74px;
   flex-shrink: 0;
-  border-radius: 16px;
+  border-radius: 14px;
   border: 2.5px solid #0f172a;
   overflow: hidden;
   background: linear-gradient(180deg, #38bdf8, #fef08a);
@@ -655,8 +692,8 @@ html, body {
 .hero-slot {
   background: linear-gradient(180deg, #ffffff, #f8fafc);
   border: 2.5px solid #cbd5e1;
-  border-radius: 14px;
-  padding: 5px 2px 6px;
+  border-radius: 13px;
+  padding: 4px 2px 5px;
   text-align: center;
   cursor: pointer;
   transition: transform 0.1s ease, box-shadow 0.1s ease;
@@ -668,8 +705,8 @@ html, body {
   transform: translateY(-1px);
 }
 .hero-avatar {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   display: block;
   margin: 0 auto 2px;
@@ -693,10 +730,10 @@ html, body {
   align-items: center;
   gap: 8px;
   background: linear-gradient(135deg, #fde047, #fb923c);
-  border: 3px solid #0f172a;
-  border-radius: 15px;
-  padding: 7px 12px;
-  box-shadow: 0 4px 0 #0f172a;
+  border: 2.5px solid #0f172a;
+  border-radius: 14px;
+  padding: 5px 10px;
+  box-shadow: 0 3px 0 #0f172a;
 }
 .srh-left {
   display: flex;
@@ -880,9 +917,9 @@ html, body {
 .boost-card {
   background: #ffffff;
   border: 2px solid #0f172a;
-  border-radius: 11px;
-  padding: 5px 8px;
-  font-size: 11.5px;
+  border-radius: 10px;
+  padding: 4px 8px;
+  font-size: 11px;
   font-weight: 900;
   cursor: pointer;
   display: flex;
@@ -898,33 +935,42 @@ html, body {
 .btn-row { display: flex; gap: 7px; }
 .launch-btn {
   flex: 1;
-  padding: 9px 12px;
+  padding: 7.5px 12px;
   border-radius: 999px;
   border: 3px solid #0f172a;
   background: linear-gradient(135deg, #facc15, #f97316);
   color: #0f172a;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 900;
   cursor: pointer;
-  box-shadow: 0 4px 0 #0f172a;
+  box-shadow: 0 3.5px 0 #0f172a;
 }
 .launch-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 #0f172a; }
 
-.hub-head-right { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
+.hub-head-right {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  margin-left: auto;
+  min-width: 0;
+}
 .cloud-pill-btn {
   background: #ffffff;
   color: #0f172a;
-  border: 2px solid #0f172a;
+  border: 1.8px solid #0f172a;
   border-radius: 999px;
-  padding: 3px 8px;
-  font-size: 11.5px;
+  padding: 2.5px 6px;
+  font-size: 10.5px;
   font-weight: 900;
   cursor: pointer;
   box-shadow: 0 2px 0 #0f172a;
-  max-width: 92px;
+  max-width: 78px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 .cloud-pill-btn.logged {
   background: #dcfce7;
@@ -1588,14 +1634,15 @@ html, body {
 .recharge-pill-btn {
   background: linear-gradient(135deg, #fde047, #f59e0b);
   color: #0f172a;
-  border: 2px solid #0f172a;
+  border: 1.8px solid #0f172a;
   border-radius: 999px;
-  padding: 3px 10px;
-  font-size: 12px;
+  padding: 2.5px 7.5px;
+  font-size: 11px;
   font-weight: 900;
   cursor: pointer;
   box-shadow: 0 2px 0 #0f172a;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 .recharge-pill-btn:active { transform: translateY(1px); box-shadow: none; }
 
@@ -1864,13 +1911,13 @@ html, body {
 }
 .pvp-hub-promo-card {
   background: linear-gradient(135deg, #1e1b4b 0%, #312e81 52%, #4c1d95 100%);
-  border: 2.6px solid #fde047;
-  border-radius: 16px;
-  padding: 9px 11px 10px;
+  border: 2.5px solid #fde047;
+  border-radius: 15px;
+  padding: 6.5px 10px 7.5px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  box-shadow: 0 4px 0 #0f172a, 0 8px 20px rgba(76, 29, 149, 0.32);
+  gap: 4px;
+  box-shadow: 0 3px 0 #0f172a, 0 6px 16px rgba(76, 29, 149, 0.28);
   position: relative;
   overflow: hidden;
 }
@@ -1881,7 +1928,7 @@ html, body {
   gap: 6px;
 }
 .pvp-promo-title {
-  font-size: 14.5px;
+  font-size: 13.5px;
   font-weight: 900;
   color: #fde047;
   text-shadow: 0 1.5px 3px rgba(0, 0, 0, 0.65);
@@ -1889,19 +1936,19 @@ html, body {
 .pvp-promo-badge {
   background: linear-gradient(135deg, #ef4444, #f97316);
   color: #ffffff;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 900;
-  padding: 2px 8px;
+  padding: 1.5px 7px;
   border-radius: 999px;
   border: 1.5px solid #fde047;
   white-space: nowrap;
   animation: pulsePop 0.9s infinite alternate;
 }
 .pvp-promo-desc {
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 700;
   color: #e2e8f0;
-  line-height: 1.38;
+  line-height: 1.28;
 }
 .pvp-promo-desc b {
   color: #4ade80;
@@ -1910,32 +1957,32 @@ html, body {
 .pvp-promo-btns {
   display: grid;
   grid-template-columns: 1.25fr 1fr;
-  gap: 7px;
+  gap: 6px;
   margin-top: 1px;
 }
 .pvp-quick-cta {
-  padding: 8.5px 10px;
+  padding: 6.5px 9px;
   border-radius: 999px;
   border: 2.2px solid #0f172a;
   background: linear-gradient(135deg, #fde047, #f97316);
   color: #0f172a;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 900;
   cursor: pointer;
-  box-shadow: 0 3px 0 #0f172a;
+  box-shadow: 0 2.5px 0 #0f172a;
   white-space: nowrap;
 }
 .pvp-quick-cta:active { transform: translateY(2px); box-shadow: 0 1px 0 #0f172a; }
 .pvp-lobby-cta {
-  padding: 8.5px 8px;
+  padding: 6.5px 8px;
   border-radius: 999px;
   border: 2.2px solid #38bdf8;
   background: rgba(15, 23, 42, 0.78);
   color: #7dd3fc;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 900;
   cursor: pointer;
-  box-shadow: 0 3px 0 #0f172a;
+  box-shadow: 0 2.5px 0 #0f172a;
   white-space: nowrap;
 }
 .pvp-lobby-cta:active { transform: translateY(2px); box-shadow: 0 1px 0 #0f172a; }
@@ -2047,27 +2094,25 @@ html, body {
   z-index: 2;
 }
 
-/* Dedicated 2-Slot Party Meme Item Bar */
+/* Dedicated 2-Slot Party Meme Item Bar — Vertically Stacked Directly Above 🐔铁山靠 (Right Thumb Ergonomic!) */
 .party-item-bar {
   position: fixed;
-  bottom: max(15px, env(safe-area-inset-bottom, 15px));
-  left: 50%;
-  transform: translateX(-50%);
+  right: 16px;
+  left: auto;
+  transform: none;
+  bottom: calc(max(14px, env(safe-area-inset-bottom, 14px)) + 88px);
   z-index: 18;
   display: flex;
-  gap: 10px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
   pointer-events: auto;
-}
-@media (max-width: 660px) {
-  .party-item-bar {
-    bottom: calc(max(14px, env(safe-area-inset-bottom, 14px)) + 86px);
-  }
 }
 .party-slot-btn {
   position: relative;
   width: 78px;
-  height: 70px;
-  border-radius: 18px;
+  height: 62px;
+  border-radius: 17px;
   border: 3px solid #fde047;
   background: linear-gradient(145deg, #1e1b4b, #312e81);
   color: #ffffff;
@@ -2076,7 +2121,7 @@ html, body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
+  gap: 1px;
   box-shadow: 0 4px 0 #0f172a, 0 6px 16px rgba(0, 0, 0, 0.45);
   transition: transform 0.08s ease, border-color 0.12s ease;
 }
@@ -2639,6 +2684,32 @@ html, body {
   background: #fef9c3;
   border-color: #ca8a04;
 }
+.podium-hero-switch-box {
+  background: linear-gradient(135deg, #fffbeb, #fef9c3);
+  border: 2px solid #eab308;
+  border-radius: 13px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.phsb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 900;
+  color: #854d0e;
+}
+.phsb-cur {
+  background: #0f172a;
+  color: #fde047;
+  padding: 1.5px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
 .party-reward-note {
   text-align: center;
   font-size: 11.5px;
@@ -2696,16 +2767,16 @@ html.force-landscape-rot #appStage {
   inset: auto;
   top: 0;
   left: 0;
-  width: 100vh;
-  height: 100vw;
+  width: var(--raw-h, 100vh);
+  height: var(--raw-w, 100vw);
   transform-origin: 0 0;
-  transform: translate(100vw, 0) rotate(90deg);
+  transform: translate(var(--raw-w, 100vw), 0) rotate(90deg);
 }
 @supports (width: 100dvw) and (width: 100dvh) {
   html.force-landscape-rot #appStage {
-    width: 100dvh;
-    height: 100dvw;
-    transform: translate(100dvw, 0) rotate(90deg);
+    width: var(--raw-h, 100dvh);
+    height: var(--raw-w, 100dvw);
+    transform: translate(var(--raw-w, 100dvw), 0) rotate(90deg);
   }
 }
 
@@ -2799,11 +2870,110 @@ html.landscape-mode .hub-card .gh-hub-mark {
 
 /* Modals inside Landscape Stage (percentage units instead of raw vh/vw!) */
 html.landscape-mode .modal-card {
-  width: min(92%, 490px);
-  max-width: min(92%, 490px);
-  max-height: calc(100% - 12px);
-  padding: 10px 14px;
+  width: min(94%, 520px);
+  max-width: min(94%, 520px);
+  max-height: calc(100% - 10px);
+  padding: 9px 13px;
+  gap: 6px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+}
+html.landscape-mode .modal-title {
+  font-size: 15.5px;
+}
+html.landscape-mode .pause-btn {
+  padding: 7.5px 10px;
+  font-size: 13px;
+}
+
+/* Widescreen 2-Column Settlement & Pause Modals in Landscape — ZERO Cut-Off Buttons! */
+html.landscape-mode #gameOverOverlay .modal-card {
+  width: min(96%, 680px);
+  max-width: min(96%, 680px);
+  padding: 8px 12px;
+  display: grid;
+  grid-template-columns: 1fr 1.12fr;
+  gap: 5px 12px;
+  align-items: center;
+}
+html.landscape-mode #gameOverOverlay .modal-head {
+  grid-column: 1 / -1;
+}
+html.landscape-mode #gameOverOverlay .go-record-box {
+  grid-column: 1;
+  grid-row: 2 / 5;
+  padding: 7px 10px;
+}
+html.landscape-mode #gameOverOverlay .go-big-dist {
+  font-size: 22px;
+}
+html.landscape-mode #gameOverOverlay .pause-stat-bar {
+  grid-column: 1;
+  grid-row: 5;
+  padding: 5px 8px;
+  font-size: 11.5px;
+}
+html.landscape-mode #gameOverOverlay .death-recap-box {
+  grid-column: 2;
+  padding: 5px 8px;
+  gap: 2px;
+}
+html.landscape-mode #gameOverOverlay .drb-cause { font-size: 11px; }
+html.landscape-mode #gameOverOverlay .drb-tip { font-size: 10.2px; line-height: 1.25; }
+html.landscape-mode #gameOverOverlay #goDeathDashRow,
+html.landscape-mode #gameOverOverlay #reviveShareCard,
+html.landscape-mode #gameOverOverlay #reviveUsedNote,
+html.landscape-mode #gameOverOverlay .go-btn-row:last-child {
+  grid-column: 2;
+}
+html.landscape-mode #gameOverOverlay #reviveShareCard {
+  padding: 5px 7px !important;
+}
+
+html.landscape-mode #pauseOverlay .modal-card {
+  width: min(95%, 640px);
+  max-width: min(95%, 640px);
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  gap: 6px 12px;
+  align-items: center;
+}
+html.landscape-mode #pauseOverlay .modal-head,
+html.landscape-mode #pauseOverlay .pause-stat-bar {
+  grid-column: 1 / -1;
+}
+html.landscape-mode #pauseOverlay .pause-hyper-shop {
+  grid-column: 1;
+  padding: 6px 9px;
+}
+html.landscape-mode #pauseOverlay > .pause-btn {
+  grid-column: 2;
+}
+
+html.landscape-mode #tutorialGradOverlay .modal-card,
+html.landscape-mode #pvpTutorialGradOverlay .modal-card,
+html.landscape-mode #tutorialMenuOverlay .modal-card {
+  width: min(96%, 690px);
+  max-width: min(96%, 690px);
+  padding: 8px 12px;
+  gap: 5px;
+}
+html.landscape-mode .tut-grad-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+html.landscape-mode .tgl-item {
+  padding: 4.5px 7px;
+  font-size: 10.8px;
+  line-height: 1.28;
+}
+html.landscape-mode .tut-course-card {
+  padding: 6px 10px;
+}
+html.landscape-mode .tcc-desc {
+  font-size: 10.5px;
+  line-height: 1.26;
 }
 
 /* Compact In-Game Landscape HUD & Tactile Controls */
@@ -2876,15 +3046,25 @@ html.landscape-mode .btn-lbl {
   margin-top: 1px;
 }
 html.landscape-mode .party-item-bar {
-  bottom: 8px;
+  right: 14px;
+  left: auto;
+  transform: none;
+  bottom: 72px;
+  gap: 5px;
 }
 html.landscape-mode .party-slot-btn {
-  width: 66px;
-  height: 56px;
-  border-radius: 15px;
+  width: 72px;
+  height: 46px;
+  border-radius: 13px;
+  flex-direction: row;
+  padding: 0 6px;
+  gap: 3px;
 }
 html.landscape-mode .pslot-ico {
-  font-size: 23px;
+  font-size: 20px;
+}
+html.landscape-mode .pslot-nm {
+  font-size: 9.8px;
 }
 html.landscape-mode #quickDashWrap {
   bottom: 78px;
@@ -3276,47 +3456,388 @@ html.landscape-mode .tut-action-cta {
   }
 }
 
-/* ==================== v8.8 PVP PROGRESSIVE FREEZE-FRAME TUTORIAL ==================== */
-.pvp-tut-promo-pill {
-  background: linear-gradient(135deg, #fde047, #f59e0b);
-  color: #0f172a;
-  border: 2px solid #0f172a;
-  border-radius: 999px;
-  padding: 2.5px 10px;
-  font-size: 11.5px;
-  font-weight: 900;
-  cursor: pointer;
-  box-shadow: 0 2px 0 #0f172a, 0 0 12px rgba(250, 204, 21, 0.55);
-  white-space: nowrap;
-  transition: transform 0.1s ease;
+/* ==================== v9.0 UNIFIED TUTORIAL HUB, STRONG AUTH GUIDE & LIVE SPECTATOR ==================== */
+#tutorialMenuOverlay { z-index: 52; }
+#acctStrongNudgeOverlay { z-index: 56; }
+
+/* Unbound Guest Strong Warning Pill on Top Bar + Hub Banner */
+#hubAccountBtn.unbound-warn {
+  background: linear-gradient(135deg, #fef08a, #f97316) !important;
+  color: #7c2d12 !important;
+  border: 1.8px solid #c2410c !important;
+  font-weight: 900 !important;
+  animation: unboundPulse 1.3s ease-in-out infinite alternate;
 }
-.pvp-tut-promo-pill:hover {
-  filter: brightness(1.06);
-}
-.pvp-tut-promo-pill:active {
-  transform: translateY(1px);
-  box-shadow: 0 1px 0 #0f172a;
+@keyframes unboundPulse {
+  0% { box-shadow: 0 1px 0 #9a3412; }
+  100% { box-shadow: 0 2px 0 #9a3412, 0 0 12px rgba(249, 115, 22, 0.72); }
 }
 
-.party-tut-cta {
+.guest-bind-strong-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: linear-gradient(135deg, #fffbeb, #ffedd5);
+  border: 2px solid #f97316;
+  border-radius: 12px;
+  padding: 6px 10px;
+  box-shadow: 0 2px 0 rgba(194, 65, 12, 0.25);
+}
+.gbs-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.gbs-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  flex-shrink: 0;
+  box-shadow: 0 0 8px #ef4444;
+}
+.gbs-txt {
+  font-size: 11px;
+  font-weight: 800;
+  color: #7c2d12;
+  line-height: 1.3;
+}
+.gbs-txt b {
+  color: #b91c1c;
+  font-weight: 900;
+}
+.gbs-cta {
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  color: #ffffff;
+  border: 2px solid #0f172a;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11.2px;
+  font-weight: 900;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 2px 0 #0f172a;
+  flex-shrink: 0;
+}
+.gbs-cta:active { transform: translateY(1px); }
+
+html.landscape-mode .hub-card .guest-bind-strong-bar {
+  grid-column: 1 / -1;
+  padding: 4px 9px;
+}
+
+/* Unified 3-Course Tutorial Center Modal */
+.tut-menu-card {
+  max-width: 445px;
+  gap: 9px;
+  border: 3px solid #facc15;
+  background: linear-gradient(180deg, #fffbeb 0%, #ffffff 100%);
+}
+.tut-menu-sub {
+  font-size: 12px;
+  font-weight: 800;
+  color: #334155;
+  background: #fef9c3;
+  border: 1.5px solid #fde047;
+  border-radius: 11px;
+  padding: 7px 10px;
+  line-height: 1.4;
+}
+.tut-menu-sub b { color: #b45309; }
+.tut-course-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tut-course-card {
   width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
   padding: 10px 12px;
   border-radius: 14px;
   border: 2.5px solid #0f172a;
-  background: linear-gradient(135deg, #fef08a, #fbbf24);
-  color: #0f172a;
-  font-size: 13.8px;
-  font-weight: 900;
+  background: #ffffff;
   cursor: pointer;
   box-shadow: 0 3px 0 #0f172a;
+  transition: transform 0.1s ease, background 0.12s ease;
 }
-.party-tut-cta:active {
-  transform: translateY(2px);
-  box-shadow: 0 1px 0 #0f172a;
+.tut-course-card:hover { transform: translateY(-1px); }
+.tut-course-card:active { transform: translateY(2px); box-shadow: 0 1px 0 #0f172a; }
+.tut-course-card.pve { background: linear-gradient(135deg, #f0fdf4, #dcfce7); }
+.tut-course-card.pvp { background: linear-gradient(135deg, #fdf4ff, #fae8ff); }
+.tut-course-card.acct { background: linear-gradient(135deg, #eff6ff, #dbeafe); }
+.tcc-left {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.tcc-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tcc-title {
+  font-size: 13.8px;
+  font-weight: 900;
+  color: #0f172a;
+}
+.tcc-badge {
+  font-size: 10.5px;
+  font-weight: 900;
+  padding: 1.5px 7px;
+  border-radius: 999px;
+  background: #fef08a;
+  color: #854d0e;
+  border: 1.5px solid #eab308;
+}
+.tcc-badge.done {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #22c55e;
+}
+.tcc-desc {
+  font-size: 11.2px;
+  font-weight: 700;
+  color: #475569;
+  line-height: 1.38;
+}
+.tcc-desc b { color: #9333ea; font-weight: 900; }
+.tcc-go {
+  background: #0f172a;
+  color: #fde047;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 6px 10px;
+  border-radius: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Player-Controlled Lesson Mastery Row Inside Tutorial Coach HUD */
+.tut-mastery-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.tut-mastery-row.hidden { display: none !important; }
+.tut-replay-btn {
+  flex: 0.9;
+  padding: 7px 10px;
+  border-radius: 11px;
+  border: 2px solid rgba(148, 163, 184, 0.55);
+  background: rgba(30, 41, 59, 0.92);
+  color: #e2e8f0;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+.tut-replay-btn:hover { background: rgba(51, 65, 85, 0.96); }
+.tut-next-step-btn {
+  flex: 1.4;
+  padding: 7px 12px;
+  border-radius: 11px;
+  border: 2.2px solid #fde047;
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  color: #ffffff;
+  font-size: 12.8px;
+  font-weight: 900;
+  cursor: pointer;
+  box-shadow: 0 0 18px rgba(74, 222, 128, 0.75);
+  animation: tutNextGlow 0.8s ease-in-out infinite alternate;
+}
+@keyframes tutNextGlow {
+  0% { box-shadow: 0 0 10px rgba(74, 222, 128, 0.55); }
+  100% { box-shadow: 0 0 24px rgba(250, 204, 21, 0.92); }
+}
+
+/* Interactive 4-Step Account & Cloud Save Strong-Guidance Coach Bar */
+.acct-tut-coach-bar {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: max(16px, calc(env(safe-area-inset-bottom, 8px) + 10px));
+  width: min(94%, 450px);
+  z-index: 65;
+  background: linear-gradient(145deg, rgba(15, 23, 42, 0.98), rgba(30, 41, 59, 0.97));
+  border: 3px solid #facc15;
+  border-radius: 18px;
+  padding: 12px 15px;
+  color: #f8fafc;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.68), 0 0 26px rgba(250, 204, 21, 0.45);
+}
+.acct-tut-coach-bar.hidden { display: none !important; }
+html.acct-tut-modal-step .acct-tut-coach-bar {
+  bottom: auto;
+  top: max(12px, calc(env(safe-area-inset-top, 6px) + 6px));
+}
+html.acct-tut-modal-step #authOverlay {
+  align-items: flex-end;
+  padding-bottom: 18px;
+}
+@media (min-height: 740px) {
+  html.acct-tut-modal-step #authOverlay {
+    align-items: center;
+    padding-top: 155px;
+    padding-bottom: 12px;
+  }
+}
+html.landscape-mode.acct-tut-modal-step .acct-tut-coach-bar {
+  left: 12px;
+  transform: none;
+  top: 12px;
+  width: min(44%, 355px);
+}
+html.landscape-mode.acct-tut-modal-step #authOverlay {
+  justify-content: flex-end;
+  align-items: center;
+  padding-top: 8px;
+  padding-right: 14px;
+}
+html.landscape-mode.acct-tut-modal-step #authOverlay .modal-card {
+  width: min(52%, 390px);
+}
+.atcb-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 5px;
+}
+.atcb-badge {
+  background: linear-gradient(135deg, #fde047, #f59e0b);
+  color: #0f172a;
+  font-size: 11.5px;
+  font-weight: 900;
+  padding: 2px 9px;
+  border-radius: 999px;
+}
+.atcb-title {
+  font-size: 14.5px;
+  font-weight: 900;
+  color: #fde047;
+  margin-bottom: 4px;
+}
+.atcb-body {
+  font-size: 12.6px;
+  font-weight: 700;
+  color: #e2e8f0;
+  line-height: 1.48;
+}
+.atcb-body b { color: #86efac; font-weight: 900; }
+.atcb-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 9px;
+}
+.atcb-sub-btn {
+  background: rgba(255, 255, 255, 0.12);
+  color: #cbd5e1;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.atcb-sub-btn.hidden, .atcb-main-btn.hidden { display: none !important; }
+.atcb-main-btn {
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  color: #ffffff;
+  border: 2px solid #fde047;
+  border-radius: 10px;
+  padding: 6px 13px;
+  font-size: 12.5px;
+  font-weight: 900;
+  cursor: pointer;
+  box-shadow: 0 0 14px rgba(74, 222, 128, 0.55);
+}
+
+/* Early-Finisher Live Rival Spectator Broadcast Bar */
+.party-spectator-hud {
+  position: absolute;
+  top: max(68px, calc(env(safe-area-inset-top, 8px) + 60px));
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(92%, 440px);
+  z-index: 34;
+  background: linear-gradient(145deg, rgba(15, 23, 42, 0.94), rgba(30, 41, 59, 0.92));
+  border: 2.5px solid #38bdf8;
+  border-radius: 16px;
+  padding: 9px 13px;
+  color: #f8fafc;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55), 0 0 20px rgba(56, 189, 248, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.party-spectator-hud.hidden { display: none !important; }
+.psh-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.psh-champ {
+  font-size: 13px;
+  font-weight: 900;
+  color: #fde047;
+}
+.psh-live-tag {
+  background: rgba(239, 68, 68, 0.24);
+  border: 1.5px solid #ef4444;
+  color: #fecaca;
+  font-size: 10.5px;
+  font-weight: 900;
+  padding: 1.5px 8px;
+  border-radius: 999px;
+  animation: tutPauseBlink 0.8s infinite alternate;
+}
+.psh-status {
+  font-size: 12.5px;
+  font-weight: 800;
+  color: #bae6fd;
+  background: rgba(2, 6, 23, 0.55);
+  border-radius: 9px;
+  padding: 5px 9px;
+}
+.psh-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+.psh-btn {
+  background: rgba(255, 255, 255, 0.15);
+  color: #f8fafc;
+  border: 1.5px solid rgba(255, 255, 255, 0.35);
+  border-radius: 9px;
+  padding: 5px 11px;
+  font-size: 11.8px;
+  font-weight: 900;
+  cursor: pointer;
+}
+.psh-btn.primary {
+  background: linear-gradient(135deg, #fde047, #f59e0b);
+  color: #0f172a;
+  border-color: #0f172a;
+  box-shadow: 0 0 14px rgba(250, 204, 21, 0.65);
+}
+html.landscape-mode .party-spectator-hud {
+  left: 14px;
+  transform: none;
+  top: 46px;
+  width: min(54%, 400px);
+  padding: 6px 10px;
 }
 
 .pvp-grad-card {
-  max-width: 425px;
+  max-width: 435px;
   border-color: #eab308;
   background: linear-gradient(180deg, #fefce8 0%, #ffffff 100%);
 }

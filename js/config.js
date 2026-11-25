@@ -60,7 +60,7 @@ export const GARAGE_MODS = [
   { key: 'claw', ico: '🧲', name: '磁铁爪', baseDur: 4.0, stepDur: 1.0, costs: [500, 1100, 2000], maxLv: 3 },
   { key: 'nitro', ico: '🚀', name: '氮气罐', baseDur: 1.8, stepDur: 0.5, costs: [500, 1100, 2000], maxLv: 3 },
   { key: 'sawBumper', ico: '⚙️', name: '破障锯', baseDur: 4.0, stepDur: 1.0, costs: [500, 1100, 2000], maxLv: 3 },
-  { key: 'mortarCat', ico: '🐱', name: '迫击猫', baseDur: 3.8, stepDur: 0.9, costs: [500, 1100, 2000], maxLv: 3 }
+  { key: 'mortarCat', ico: '🐱', name: '迫击猫', baseDur: 6.5, stepDur: 1.5, costs: [500, 1100, 2000], maxLv: 3 }
 ];
 
 // Green-Bean Permanent Talent System:

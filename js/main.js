@@ -25,7 +25,7 @@ import {
   getTalentLvFromSave,
   getSuperChargeSpeedMultFromSave,
   getAutoRegenPer5sFromSave
-} from './config.js?v=8.8';
+} from './config.js?v=9.0';
 
 import {
   buildAllSculptedAssets,
@@ -34,13 +34,13 @@ import {
   drawSculptedBikeAndHero,
   getEnemySpriteKey,
   getHeroPortraitDataUrl
-} from './models.js?v=8.8';
+} from './models.js?v=9.0';
 
 import {
   drawBiomeAtmosphere,
   drawSculptedTerrainAndRoad,
   drawHubDioramaBackdrop
-} from './scenery.js?v=8.8';
+} from './scenery.js?v=9.0';
 
 import {
   ensureAudio,
@@ -55,10 +55,10 @@ import {
   stopBossBgm,
   playSfx,
   tickProceduralBgm
-} from './audio.js?v=8.8';
+} from './audio.js?v=9.0';
 
-import { createCloudStore } from './cloud.js?v=8.8';
-import { createPartyController } from './party.js?v=8.8';
+import { createCloudStore } from './cloud.js?v=9.0';
+import { createPartyController } from './party.js?v=9.0';
 import {
   initBossCustomState,
   clearBossTransientHazards,
@@ -67,7 +67,7 @@ import {
   handlePlayerBossInteraction,
   updateBossEngine,
   renderBossArenaAndModel
-} from './bosses.js?v=8.8';
+} from './bosses.js?v=9.0';
 
 // Zero-allocation in-place array compaction (eliminates 1,400+ GC array allocations/sec!)
 function compactInPlace(arr, keepFn) {
@@ -98,8 +98,8 @@ function getSurvivalGradient(singleDist) {
 
   // Gentle per-hit scaling so discrete hits NEVER one-shot; survival pressure comes from density + continuous drain
   const dmgMult = +(1 + 0.36 * Math.log1p(km)).toFixed(2);
-  // Decoupled, smooth, strictly bounded forward speed (+0 at 0m, +28 at 1km, +47 at 2km, upper bound = +92 px/s)
-  const boundedSpeedAdd = Math.round(92 * (1 - Math.exp(-d / 2800)));
+  // Decoupled, smooth, raised asymptotic forward speed (+0 at 0m, +65 at 1km, +138 at 2.5km, upper bound = +295 px/s ~ 1.84x!)
+  const boundedSpeedAdd = Math.round(295 * (1 - Math.exp(-d / 4000)));
   // ZERO invisible environmental air-drain — players ONLY lose HP from visible collisions!
   const envDrain = 0;
 
@@ -246,8 +246,32 @@ const reviveShareCard = document.getElementById('reviveShareCard');
 const reviveStatusHint = document.getElementById('reviveStatusHint');
 const reviveUsedNote = document.getElementById('reviveUsedNote');
 const goRankOpenBtn = document.getElementById('goRankOpenBtn');
+const goCloseTopBtn = document.getElementById('goCloseTopBtn');
 const goRetryBtn = document.getElementById('goRetryBtn');
 const goHubBtn = document.getElementById('goHubBtn');
+
+const guestBindStrongBanner = document.getElementById('guestBindStrongBanner');
+const guestBindGuideBtn = document.getElementById('guestBindGuideBtn');
+const tutorialMenuOverlay = document.getElementById('tutorialMenuOverlay');
+const tutMenuCloseBtn = document.getElementById('tutMenuCloseBtn');
+const tutMenuPveBtn = document.getElementById('tutMenuPveBtn');
+const tutMenuPvpBtn = document.getElementById('tutMenuPvpBtn');
+const tutMenuAcctBtn = document.getElementById('tutMenuAcctBtn');
+const tutMenuPveBadge = document.getElementById('tutMenuPveBadge');
+const tutMenuPvpBadge = document.getElementById('tutMenuPvpBadge');
+const tutMenuAcctBadge = document.getElementById('tutMenuAcctBadge');
+
+const acctStrongNudgeOverlay = document.getElementById('acctStrongNudgeOverlay');
+const acctNudgeDesc = document.getElementById('acctNudgeDesc');
+const acctNudgeStartBtn = document.getElementById('acctNudgeStartBtn');
+const acctNudgeLaterBtn = document.getElementById('acctNudgeLaterBtn');
+const acctTutCoachBar = document.getElementById('acctTutCoachBar');
+const acctTutStepPill = document.getElementById('acctTutStepPill');
+const acctTutCloseBtn = document.getElementById('acctTutCloseBtn');
+const acctTutTitle = document.getElementById('acctTutTitle');
+const acctTutBody = document.getElementById('acctTutBody');
+const acctTutSubBtn = document.getElementById('acctTutSubBtn');
+const acctTutPrimaryBtn = document.getElementById('acctTutPrimaryBtn');
 
 const authOverlay = document.getElementById('authOverlay');
 const authModalTitle = document.getElementById('authModalTitle');
@@ -295,6 +319,57 @@ let bankedRunBeans = 0;
 
 let reopenRechargeAfterAuth = false;
 let lastObservedAuthUser = null;
+let activeRunOwner = 'guest';
+let activeRunStartMs = 0;
+let activeRunLogged = false;
+
+function getActiveAccountOwnerTag() {
+  return (store && store.auth && store.auth.token && store.auth.username)
+    ? `u:${store.auth.username.toLowerCase()}`
+    : 'guest';
+}
+
+function resetTransientRunStats() {
+  runStartDist = 0;
+  prevBestSingleRun = (store && store.save && store.save.bestSingleRun) || 0;
+  bankedRunBeans = 0;
+  runStats = {
+    dist: 0,
+    singleRunDist: 0,
+    beans: 0,
+    bossKills: 0,
+    reviveUsed: false,
+    healBuysUsed: 0,
+    deathDashMeters: 0,
+    deathDashUsed: false
+  };
+}
+
+function logFinishedRun(opts = {}) {
+  try {
+    const durSec = activeRunStartMs > 0 ? Math.max(1, Math.round((Date.now() - activeRunStartMs) / 1000)) : 10;
+    const tok = (store.auth && store.auth.token) || '';
+    fetch('/api/run_log', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(tok ? { Authorization: `Bearer ${tok}` } : {})
+      },
+      body: JSON.stringify({
+        mode: opts.mode || 'pve',
+        hero: activeRunHeroId || store.save.selectedHero || 'nailong',
+        singleDist: Math.floor(Number(opts.singleDist ?? runStats.singleRunDist) || 0),
+        beansEarned: Math.floor(Number(opts.beansEarned ?? runStats.beans) || 0),
+        bossKills: Math.floor(Number(opts.bossKills ?? runStats.bossKills) || 0),
+        durationSec: durSec,
+        extraNote: String(opts.extraNote || ''),
+        guestId: typeof getOrCreateGuestId === 'function' ? getOrCreateGuestId() : '',
+        token: tok
+      }),
+      keepalive: true
+    }).catch(() => {});
+  } catch (_) {}
+}
 
 const store = createCloudStore(() => {
   const curAuthUser = (store.auth && store.auth.username) || '';
@@ -302,6 +377,7 @@ const store = createCloudStore(() => {
     preSelectedBoost = 0;
     preSelectedDeathBoost = 0;
     activeRunHeroId = store.save.selectedHero;
+    if (state === 'HUB') resetTransientRunStats();
   }
   lastObservedAuthUser = curAuthUser;
   refreshAccountButtonsUI();
@@ -338,13 +414,17 @@ function refreshAccountButtonsUI() {
   if (auth.token && auth.username) {
     hubAccountBtn.textContent = `☁️ ${auth.username}`;
     hubAccountBtn.classList.add('logged');
+    hubAccountBtn.classList.remove('unbound-warn');
+    if (guestBindStrongBanner) guestBindStrongBanner.classList.add('hidden-block');
     authCurrentUserLbl.textContent = `👤 账号：${auth.username}`;
     const totalHeroLv = Object.values(s.heroLv || {}).reduce((a, b) => a + Number(b || 1), 0);
     const totalModLv = Object.values(s.mods || {}).reduce((a, b) => a + Number(b || 0), 0);
     authCloudSummary.textContent = `🌿${s.beans} · 单命最高${s.bestSingleRun}m · 角色总等级Lv${totalHeroLv} · 改装Lv${totalModLv}`;
   } else {
-    hubAccountBtn.textContent = '☁️ 存档';
+    hubAccountBtn.textContent = '☁️ 未绑号';
     hubAccountBtn.classList.remove('logged');
+    hubAccountBtn.classList.add('unbound-warn');
+    if (guestBindStrongBanner) guestBindStrongBanner.classList.remove('hidden-block');
   }
 }
 
@@ -411,7 +491,12 @@ donateWechatTab.addEventListener('click', () => {
   donateAlipayTab.classList.remove('active-ali');
 });
 
-hubAccountBtn.addEventListener('click', openAuthModal);
+hubAccountBtn.addEventListener('click', () => {
+  openAuthModal();
+  if (acctTutState.active && acctTutState.step === 1) {
+    renderAccountTutorialStep(2);
+  }
+});
 authCloseBtn.addEventListener('click', closeAuthModal);
 authOverlay.addEventListener('click', (e) => {
   if (e.target === authOverlay) closeAuthModal();
@@ -423,17 +508,19 @@ async function handleAuthSubmit(mode) {
   authBusy = true;
   authMsg.classList.remove('ok');
   authMsg.textContent = mode === 'register' ? '⏳ 正在校验并上传全部资源与等级...' : '⏳ 正在登录读取云存档...';
-  const res = await store.submitAuth(mode, authUserInp.value, authPassInp.value, authHpTrap.value || '');
+  const gid = typeof getOrCreateGuestId === 'function' ? getOrCreateGuestId() : '';
+  const res = await store.submitAuth(mode, authUserInp.value, authPassInp.value, authHpTrap.value || '', gid);
   authBusy = false;
   if (!res.ok) {
     authMsg.textContent = `❌ ${res.error}`;
     return;
   }
   authPassInp.value = '';
+  resetTransientRunStats();
   playSfx('crate');
   refreshAccountButtonsUI();
   if (state === 'HUB') refreshHubUI();
-  showToast(mode === 'register' ? `☁️ 注册成功！已绑定 ${res.username}` : `☁️ 欢迎回来，${res.username}！`);
+  showToast(mode === 'register' ? `☁️ 注册成功！已无损绑定 ${res.username}` : `☁️ 欢迎回来，${res.username}！`);
   if (reopenRechargeAfterAuth) {
     reopenRechargeAfterAuth = false;
     closeAuthModal();
@@ -442,8 +529,11 @@ async function handleAuthSubmit(mode) {
   }
   openAuthModal();
   authLoggedMsg.textContent = mode === 'register'
-    ? '✅ 注册成功，绿豆资源与全部等级已上云！'
-    : '✅ 云端存档（含绿豆与角色/改装等级）已精准载入！';
+    ? '✅ 注册成功，全部绿豆、最高纪录与角色等级已100%无损上云！'
+    : '✅ 云端存档（含绿豆、最高纪录与全部等级）已精准载入！';
+  if (acctTutState.active && acctTutState.step === 2) {
+    renderAccountTutorialStep(3);
+  }
 }
 
 authRegisterBtn.addEventListener('click', () => handleAuthSubmit('register'));
@@ -456,7 +546,10 @@ authSyncNowBtn.addEventListener('click', () => {
 });
 authLogoutBtn.addEventListener('click', () => {
   store.logoutToGuest();
-  showToast('👤 已切回默认游客模式');
+  resetTransientRunStats();
+  refreshAccountButtonsUI();
+  if (state === 'HUB') refreshHubUI();
+  showToast('👤 已切回默认游客模式（成绩已与原账号隔离）');
   closeAuthModal();
 });
 
@@ -1395,11 +1488,14 @@ function refreshOrientButtonsUI() {
 }
 
 function resize() {
-  const rawW = window.innerWidth || 390;
-  const rawH = window.innerHeight || 844;
+  const vv = window.visualViewport;
+  const rawW = Math.round((vv && vv.width) || window.innerWidth || 390);
+  const rawH = Math.round((vv && vv.height) || window.innerHeight || 844);
   const isCoarseTouch = Boolean(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
   const isMobileDev = isCoarseTouch || Math.max(rawW, rawH) <= 960;
   const root = document.documentElement;
+  root.style.setProperty('--raw-w', `${rawW}px`);
+  root.style.setProperty('--raw-h', `${rawH}px`);
   root.classList.toggle('is-mobile-device', isMobileDev);
 
   const needCssRot = manualLandscape && rawW < rawH;
@@ -1443,8 +1539,33 @@ function toggleManualLandscape() {
 if (hubOrientBtn) hubOrientBtn.addEventListener('click', toggleManualLandscape);
 if (hudOrientBtn) hudOrientBtn.addEventListener('click', toggleManualLandscape);
 window.addEventListener('resize', resize);
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 80));
 resize();
+
+// Smooth Touch-Scroll Adapter when #appStage is CSS-rotated 90deg (`force-landscape-rot`)
+let rotScrollBox = null;
+let rotLastClientX = 0;
+window.addEventListener('touchstart', (e) => {
+  if (!isCssLandscapeRotated || !e.touches || e.touches.length !== 1) { rotScrollBox = null; return; }
+  const t = e.target;
+  const scroller = t && t.closest && t.closest('.rank-list-box, .talent-list-box, .modal-card, .hub-card');
+  if (scroller && scroller.scrollHeight > scroller.clientHeight + 4) {
+    rotScrollBox = scroller;
+    rotLastClientX = e.touches[0].clientX;
+  } else {
+    rotScrollBox = null;
+  }
+}, { passive: true });
+window.addEventListener('touchmove', (e) => {
+  if (!isCssLandscapeRotated || !rotScrollBox || !e.touches || e.touches.length !== 1) return;
+  const curX = e.touches[0].clientX;
+  const dx = curX - rotLastClientX;
+  rotLastClientX = curX;
+  // Under rotate(90deg), physical +X (right) corresponds to rotated UP (-scrollTop)
+  rotScrollBox.scrollTop += dx;
+}, { passive: true });
+window.addEventListener('touchend', () => { rotScrollBox = null; }, { passive: true });
 
 let pits = [];
 let mudZones = [];
@@ -1484,11 +1605,14 @@ let lastDamageMeta = {
   tip: '善用铁山靠（电脑左键/J）可正面破盾撞怪并弹反飞行物！'
 };
 
-// ==================== PROGRESSIVE FREEZE-FRAME TUTORIAL STATE (PVE 10-STEP & PVP 7-STEP, v8.8) ====================
+// ==================== PROGRESSIVE FREEZE-FRAME TUTORIAL STATE (PVE 10-STEP, PVP 10-STEP & STRONG AUTH 4-STEP, v9.0) ====================
 const TUT_DONE_KEY = 'pelican_tutorial_done_v4';
 const TUT_REWARD_KEY = 'pelican_tutorial_reward_v4';
-const PVP_TUT_DONE_KEY = 'pelican_pvp_tut_done_v1';
-const PVP_TUT_REWARD_KEY = 'pelican_pvp_tut_reward_v1';
+const PVP_TUT_DONE_KEY = 'pelican_pvp_tut_done_v2';
+const PVP_TUT_REWARD_KEY = 'pelican_pvp_tut_reward_v2';
+const ACCT_TUT_DONE_KEY = 'pelican_acct_tut_done_v1';
+const ACCT_TUT_REWARD_KEY = 'pelican_acct_tut_reward_v1';
+const ACCT_NUDGE_SESSION_KEY = 'pelican_acct_nudge_shown_v1';
 const tutorialCoachHud = document.getElementById('tutorialCoachHud');
 const tutStepBadge = document.getElementById('tutStepBadge');
 const tutPauseBadge = document.getElementById('tutPauseBadge');
@@ -1496,6 +1620,12 @@ const tutSkipRunBtn = document.getElementById('tutSkipRunBtn');
 const tutCoachTitleTxt = document.getElementById('tutCoachTitleTxt');
 const tutCoachMainTxt = document.getElementById('tutCoachMainTxt');
 const tutCoachActionCta = document.getElementById('tutCoachActionCta');
+const tutMasteryRow = document.getElementById('tutMasteryRow');
+const tutReplayStepBtn = document.getElementById('tutReplayStepBtn');
+const tutNextStepBtn = document.getElementById('tutNextStepBtn');
+const tutWelcomeOpenMenuBtn = document.getElementById('tutWelcomeOpenMenuBtn');
+const tutGradOpenMenuBtn = document.getElementById('tutGradOpenMenuBtn');
+const pvpTutGradOpenMenuBtn = document.getElementById('pvpTutGradOpenMenuBtn');
 const tutDots = [
   document.getElementById('tutDot1'),
   document.getElementById('tutDot2'),
@@ -1625,6 +1755,9 @@ function getTerrainSlope(wx) {
   return Math.atan2(getBaseSurfaceY(wx + dx) - getBaseSurfaceY(wx - dx), dx * 2);
 }
 
+let spectatorCamX = null;
+let spectatorCamY = null;
+
 function getCamera() {
   const isPortrait = H > W;
   const isMobileLand = !isPortrait && H < 480;
@@ -1632,9 +1765,28 @@ function getCamera() {
     ? Math.max(0.58, Math.min(0.72, W / 535))
     : (isMobileLand ? Math.max(0.66, Math.min(0.84, H / 515)) : Math.max(0.76, Math.min(0.95, H / 500)));
   const worldScale = baseScale * smoothCamZoom;
+  const groundScreenY = isPortrait ? H * 0.66 : (isMobileLand ? H * 0.74 : H * 0.70);
+
+  // Early-Finisher Live Rival Spectator Camera (`pvp先到的能看对手在干嘛`)!
+  const specFocus = (partyCtrl && partyCtrl.getSpectatorFocus) ? partyCtrl.getSpectatorFocus() : null;
+  if (specFocus) {
+    const specScreenX = W * 0.34;
+    const wantCamX = specFocus.x - specScreenX / worldScale;
+    const wantCamY = Math.min(specFocus.y, getBaseSurfaceY(specFocus.x) + 45) * 0.38 - groundScreenY / worldScale;
+    if (spectatorCamX === null || Math.abs(wantCamX - spectatorCamX) > 2600) {
+      spectatorCamX = wantCamX;
+      spectatorCamY = wantCamY;
+    } else {
+      spectatorCamX += (wantCamX - spectatorCamX) * 0.20;
+      spectatorCamY += (wantCamY - spectatorCamY) * 0.20;
+    }
+    return { worldScale, camX: spectatorCamX, camY: spectatorCamY };
+  }
+  spectatorCamX = null;
+  spectatorCamY = null;
+
   // When 🐕 大狗嚼 chases from BEHIND, shift rider toward 0.37*W so player clearly sees rear pursuit!
   const playerScreenX = W * smoothPlayerScreenRatio;
-  const groundScreenY = isPortrait ? H * 0.66 : (isMobileLand ? H * 0.74 : H * 0.70);
   const camX = player.x - playerScreenX / worldScale;
   const camY = smoothCamRefY * 0.38 - groundScreenY / worldScale;
   return { worldScale, camX, camY };
@@ -1667,9 +1819,10 @@ function spawnBeanFountain(wx, wy, count = 6, valEach = 1) {
   }
 }
 
-// Incrementally bank beans, total distance, single-life record & checkpoints
+// Incrementally bank beans, total distance, single-life record & checkpoints (strictly isolated per account!)
 function bankRunProgress(pushToCloud = false) {
-  if (state === 'HUB') return;
+  if (state === 'HUB' || tutorialSession.active) return;
+  if (getActiveAccountOwnerTag() !== activeRunOwner) return;
   const s = store.save;
   let changed = false;
   const deltaBeans = Math.max(0, runStats.beans - bankedRunBeans);
@@ -1976,8 +2129,10 @@ function activateWorldProp(def) {
   } else if (def.id === 'dash_rocket') {
     const dur = getModPropDuration(s, 'nitro');
     player.rocketDashTimer = dur;
+    const curNorm = player.baseSpeed + getSurvivalGradient(runStats.singleRunDist).speedAdd;
+    player.vx = Math.max(player.vx, Math.round(curNorm * 2.0));
     player.invulnTimer = Math.max(player.invulnTimer, dur + 0.35);
-    showToast(`🚀 氮气罐冲刺 (${dur.toFixed(1)}s)!`);
+    showToast(`🚀 氮气罐极速 2.0x 冲刺 (${dur.toFixed(1)}s)!`);
   } else if (def.id === 'orbit_saws') {
     const dur = getModPropDuration(s, 'sawBumper');
     player.orbitSawTimer = dur;
@@ -1986,8 +2141,8 @@ function activateWorldProp(def) {
   } else if (def.id === 'mortar_cat') {
     const dur = getModPropDuration(s, 'mortarCat');
     player.mortarTimer = dur;
-    player.mortarShotTick = 0.08;
-    showToast(`🐱 迫击猫助战 (${dur.toFixed(1)}s)!`);
+    player.mortarShotTick = 0.04;
+    showToast(`🐱 重装迫击猫双联轰炸 (${dur.toFixed(1)}s)!`);
   } else if (def.id === 'gatling' || def.id === 'bazooka') {
     player.weaponId = def.id;
     player.weaponTimer = 4.8;
@@ -2088,6 +2243,236 @@ function isPcControlHintMode() {
   return !document.documentElement.classList.contains('is-mobile-device');
 }
 
+function clearAccountTutorialSpotlights() {
+  for (const el of [
+    hubAccountBtn,
+    authUserInp,
+    authPassInp,
+    authRegisterBtn,
+    authLoginBtn,
+    authSyncNowBtn,
+    hubRankOpenBtn,
+    hubWalletChip
+  ]) {
+    if (el) el.classList.remove('tut-spotlight');
+  }
+}
+
+const acctTutState = {
+  active: false,
+  step: 0
+};
+
+function stopAccountSaveTutorial() {
+  acctTutState.active = false;
+  acctTutState.step = 0;
+  clearAccountTutorialSpotlights();
+  document.documentElement.classList.remove('acct-tut-modal-step');
+  if (acctTutCoachBar) acctTutCoachBar.classList.add('hidden');
+}
+
+function renderAccountTutorialStep(stepNum) {
+  acctTutState.active = true;
+  acctTutState.step = stepNum;
+  clearAccountTutorialSpotlights();
+  if (!acctTutCoachBar) return;
+  acctTutCoachBar.classList.remove('hidden');
+
+  const isLogged = Boolean(store.auth && store.auth.token && store.auth.username);
+  const s = store.save;
+
+  if (stepNum === 1) {
+    document.documentElement.classList.remove('acct-tut-modal-step');
+    closeAuthModal();
+    if (hubOverlay) hubOverlay.classList.remove('hidden');
+    if (hubAccountBtn) hubAccountBtn.classList.add('tut-spotlight');
+    if (acctTutStepPill) acctTutStepPill.textContent = '🔐 防丢档强指引 1/4';
+    if (acctTutTitle) {
+      acctTutTitle.textContent = isLogged
+        ? `👆 第 1 步：右上角【☁️ ${store.auth.username}】即为你的云存档中心`
+        : '👆 第 1 步：点击车库右上角发光的【☁️ 未绑号】按钮';
+    }
+    if (acctTutBody) {
+      acctTutBody.innerHTML = '默认<b>游客存档</b>只保存在当前浏览器本地，一旦清理缓存或换手机/电脑就会丢失！点击右上角发光的<b>【☁️ 未绑号】</b>（或点下方绿色按钮）立即打开云端保险箱：';
+    }
+    if (acctTutSubBtn) acctTutSubBtn.classList.add('hidden');
+    if (acctTutPrimaryBtn) {
+      acctTutPrimaryBtn.textContent = '打开云存档面板 ▶';
+      acctTutPrimaryBtn.classList.remove('hidden');
+    }
+    return;
+  }
+
+  if (stepNum === 2) {
+    document.documentElement.classList.add('acct-tut-modal-step');
+    openAuthModal();
+    if (acctTutStepPill) acctTutStepPill.textContent = '🔐 防丢档强指引 2/4';
+    if (!isLogged) {
+      if (authUserInp) authUserInp.classList.add('tut-spotlight');
+      if (authPassInp) authPassInp.classList.add('tut-spotlight');
+      if (authRegisterBtn) authRegisterBtn.classList.add('tut-spotlight');
+      if (acctTutTitle) acctTutTitle.textContent = '✍️ 第 2 步：填写自选账号密码，点绿色【✨ 注册并保存当前进度】';
+      if (acctTutBody) {
+        acctTutBody.innerHTML = `只需输入 2~20 位账号与 4 位以上密码并点<b>绿色注册按钮</b>，你当前的 <b>🌿 ${s.beans} 绿豆、🏆 ${s.bestSingleRun || 0}m 单命纪录与全部角色/天赋等级</b> 将 <b>100% 原封不动无损继承上云</b>（支持百万级绿豆与超远纪录，绝不截断）！`;
+      }
+      if (acctTutSubBtn) {
+        acctTutSubBtn.textContent = '暂不填写，先看下一步规则 ▶';
+        acctTutSubBtn.classList.remove('hidden');
+      }
+      if (acctTutPrimaryBtn) {
+        acctTutPrimaryBtn.textContent = '✨ 填好了，立即注册绑号 ▶';
+        acctTutPrimaryBtn.classList.remove('hidden');
+      }
+    } else {
+      if (authSyncNowBtn) authSyncNowBtn.classList.add('tut-spotlight');
+      if (acctTutTitle) acctTutTitle.textContent = `✅ 第 2 步：已绑定【${store.auth.username}】· 自动上云与滚动备份`;
+      if (acctTutBody) {
+        acctTutBody.innerHTML = '每次跑酷结算、升级角色、点天赋或竞速领奖都会<b>自动加密上云</b>，且服务器自动为你保留<b>最近 12 份滚动历史存档快照</b>！你也可随时点绿色<b>【☁️ 立即同步到云端】</b>手动备份。';
+      }
+      if (acctTutSubBtn) acctTutSubBtn.classList.add('hidden');
+      if (acctTutPrimaryBtn) {
+        acctTutPrimaryBtn.textContent = '下一步：跨手机/电脑找回 ▶';
+        acctTutPrimaryBtn.classList.remove('hidden');
+      }
+    }
+    return;
+  }
+
+  if (stepNum === 3) {
+    document.documentElement.classList.add('acct-tut-modal-step');
+    openAuthModal();
+    if (acctTutStepPill) acctTutStepPill.textContent = '🔐 防丢档强指引 3/4';
+    if (!isLogged) {
+      if (authLoginBtn) authLoginBtn.classList.add('tut-spotlight');
+      if (acctTutTitle) acctTutTitle.textContent = '🔑 第 3 步：换手机 / 换电脑时，点橙色【🔑 登录读取云端存档】';
+      if (acctTutBody) {
+        acctTutBody.innerHTML = '以后在别的手机、平板或电脑打开游戏时，<b>切记不要重复点注册</b>——输入同一组账号密码，点橙色<b>【🔑 登录读取云端存档】</b>即可秒找回全部绿豆与等级！且不同账号切换时成绩<b>严格物理隔离、绝不串号</b>！';
+      }
+    } else {
+      if (authSyncNowBtn) authSyncNowBtn.classList.add('tut-spotlight');
+      if (acctTutTitle) acctTutTitle.textContent = '🔑 第 3 步：跨设备登录找回 & 多账号严格物理隔离';
+      if (acctTutBody) {
+        acctTutBody.innerHTML = `在任何新手机或电脑打开游戏，输入 <b>${store.auth.username}</b> 点<b>【🔑 登录读取云端存档】</b>即可完整恢复进度；切换其他账号时本局缓存自动清空，<b>绝不会把一个号的成绩串到另一个号上</b>！`;
+      }
+    }
+    if (acctTutSubBtn) acctTutSubBtn.classList.add('hidden');
+    if (acctTutPrimaryBtn) {
+      acctTutPrimaryBtn.textContent = '下一步：领 +200🌿 毕业礼 ▶';
+      acctTutPrimaryBtn.classList.remove('hidden');
+    }
+    return;
+  }
+
+  // Step 4: Graduation & +200 Beans First-Time Reward!
+  document.documentElement.classList.remove('acct-tut-modal-step');
+  closeAuthModal();
+  if (hubRankOpenBtn) hubRankOpenBtn.classList.add('tut-spotlight');
+  if (hubWalletChip) hubWalletChip.classList.add('tut-spotlight');
+
+  let firstReward = false;
+  try {
+    if (!localStorage.getItem(ACCT_TUT_REWARD_KEY)) {
+      localStorage.setItem(ACCT_TUT_REWARD_KEY, '1');
+      firstReward = true;
+    }
+    localStorage.setItem(ACCT_TUT_DONE_KEY, '1');
+  } catch (_) {}
+
+  if (firstReward) {
+    store.save.beans = (store.save.beans || 0) + 200;
+    store.markMutatedAndSave(true);
+    playSfx('crate');
+    refreshHubUI();
+    showToast('🎁 防丢档指引完成！奖励 +200 🌿 绿豆已入账！');
+  } else {
+    playSfx('bean');
+  }
+
+  if (acctTutStepPill) acctTutStepPill.textContent = '🎉 防丢档强指引 4/4 · 完成';
+  if (acctTutTitle) {
+    acctTutTitle.textContent = firstReward
+      ? '🎉 第 4 步：防丢档毕业礼 +200 🌿 已入账！'
+      : '🎉 第 4 步：云存档与排行榜保护机制已全部掌握！';
+  }
+  if (acctTutBody) {
+    acctTutBody.innerHTML = '绑定账号后，你的<b>🌏 全服单命挑战榜</b>会自动关联专属账号（支持数万米以上超高纪录完整上榜，并自动合并旧游客同名记录），服务器双重备份为你保驾护航！';
+  }
+  if (acctTutSubBtn) {
+    acctTutSubBtn.textContent = '📚 返回新手教程中心';
+    acctTutSubBtn.classList.remove('hidden');
+  }
+  if (acctTutPrimaryBtn) {
+    acctTutPrimaryBtn.textContent = '✅ 完成指引';
+    acctTutPrimaryBtn.classList.remove('hidden');
+  }
+}
+
+function startAccountSaveTutorial() {
+  ensureAudio();
+  playSfx('bean');
+  if (tutorialMenuOverlay) tutorialMenuOverlay.classList.add('hidden');
+  if (tutorialWelcomeOverlay) tutorialWelcomeOverlay.classList.add('hidden');
+  if (acctStrongNudgeOverlay) acctStrongNudgeOverlay.classList.add('hidden');
+  if (state !== 'HUB') {
+    if (partyCtrl && partyCtrl.isActive()) partyCtrl.exitPartyToHub();
+    else finishRunAndOpenHub();
+  }
+  renderAccountTutorialStep(1);
+}
+
+function refreshTutorialMenuBadges() {
+  try {
+    const pveDone = Boolean(localStorage.getItem(TUT_REWARD_KEY));
+    const pvpDone = Boolean(localStorage.getItem(PVP_TUT_REWARD_KEY));
+    const acctDone = Boolean(localStorage.getItem(ACCT_TUT_REWARD_KEY));
+    if (tutMenuPveBadge) {
+      tutMenuPveBadge.textContent = pveDone ? '✅ 已通关 · 可重温' : '🎁 首通 +300🌿';
+      tutMenuPveBadge.classList.toggle('done', pveDone);
+    }
+    if (tutMenuPvpBadge) {
+      tutMenuPvpBadge.textContent = pvpDone ? '✅ 已通关 · 可重温' : '🎁 首通 +500🌿';
+      tutMenuPvpBadge.classList.toggle('done', pvpDone);
+    }
+    if (tutMenuAcctBadge) {
+      tutMenuAcctBadge.textContent = acctDone ? '✅ 已领奖 · 可重温' : '🎁 首通 +200🌿';
+      tutMenuAcctBadge.classList.toggle('done', acctDone);
+    }
+  } catch (_) {}
+}
+
+function openTutorialMenuModal() {
+  ensureAudio();
+  playSfx('bean');
+  stopAccountSaveTutorial();
+  if (tutorialWelcomeOverlay) tutorialWelcomeOverlay.classList.add('hidden');
+  if (tutorialGradOverlay) tutorialGradOverlay.classList.add('hidden');
+  if (pvpTutorialGradOverlay) pvpTutorialGradOverlay.classList.add('hidden');
+  refreshTutorialMenuBadges();
+  if (tutorialMenuOverlay) tutorialMenuOverlay.classList.remove('hidden');
+}
+
+function closeTutorialMenuModal() {
+  if (tutorialMenuOverlay) tutorialMenuOverlay.classList.add('hidden');
+}
+
+function maybeShowStrongAccountNudge() {
+  if (state !== 'HUB') return;
+  if (store.auth && store.auth.token && store.auth.username) return;
+  if (acctTutState.active) return;
+  const s = store.save;
+  if ((s.beans || 0) < 2300 && (s.bestSingleRun || 0) < 40) return;
+  try {
+    if (sessionStorage.getItem(ACCT_NUDGE_SESSION_KEY)) return;
+    sessionStorage.setItem(ACCT_NUDGE_SESSION_KEY, '1');
+  } catch (_) {
+    return;
+  }
+  if (acctNudgeDesc) {
+    acctNudgeDesc.innerHTML = `你当前已积累了 <b>🌿 ${(s.beans || 0).toLocaleString()} 绿豆</b> 与 <b>🏆 ${s.bestSingleRun || 0}m 单命纪录</b>，但仍处于<b>临时游客模式</b>——一旦清理浏览器缓存或更换手机/电脑，本地存档就会丢失！现在花 10 秒跟着强指引免费绑号，<b>100% 无损继承全部绿豆与等级</b>，再额外立领 <b>+200 🌿</b>！`;
+  }
+  if (acctStrongNudgeOverlay) acctStrongNudgeOverlay.classList.remove('hidden');
+}
+
 function clearTutorialSpotlights() {
   if (tutorialSession.active && tutorialSession.savedDashEnergy !== undefined) {
     store.save.dashEnergy = tutorialSession.savedDashEnergy;
@@ -2097,6 +2482,7 @@ function clearTutorialSpotlights() {
   tutorialSession.mode = 'pve';
   tutorialSession.totalSteps = 10;
   tutorialSession.pausedForPrompt = false;
+  tutorialSession.masteryReady = false;
   tutorialSession.expectedInput = null;
   tutorialSession.callout = null;
   tutorialSession.timeScale = 1.0;
@@ -2115,6 +2501,7 @@ function clearTutorialSpotlights() {
     tutorialCoachHud.classList.add('hidden');
     tutorialCoachHud.classList.remove('parry-alert');
   }
+  if (tutMasteryRow) tutMasteryRow.classList.add('hidden');
   if (tutPauseBadge) tutPauseBadge.classList.add('hidden');
   if (tutorialGradOverlay) tutorialGradOverlay.classList.add('hidden');
   if (pvpTutorialGradOverlay) pvpTutorialGradOverlay.classList.add('hidden');
@@ -2162,24 +2549,28 @@ function applyProgressiveButtonVisibility(stepNum) {
   document.documentElement.classList.toggle('tutorial-boss-stage', stepNum >= 9);
 }
 
-function setTutorialCoachDisplay({ badge, title, main, cta, spotlightBtn = null, paused = false, alertGlow = false }) {
+function setTutorialCoachDisplay({ badge, title, main, cta, spotlightBtn = null, paused = false, alertGlow = false, masteryReady = false, replayLbl = '🔄 再练一次本节' }) {
   if (tutStepBadge && badge) tutStepBadge.textContent = badge;
   if (tutCoachTitleTxt && title !== undefined) tutCoachTitleTxt.innerHTML = title;
   if (tutCoachMainTxt && main !== undefined) tutCoachMainTxt.innerHTML = main;
   if (tutCoachActionCta && cta !== undefined) {
     tutCoachActionCta.innerHTML = cta;
-    tutCoachActionCta.classList.toggle('waiting-ride', !paused && spotlightBtn === null);
+    tutCoachActionCta.classList.toggle('waiting-ride', !paused && spotlightBtn === null && !masteryReady);
+  }
+  if (tutMasteryRow) {
+    tutMasteryRow.classList.toggle('hidden', !masteryReady);
+    if (masteryReady && tutReplayStepBtn) tutReplayStepBtn.textContent = replayLbl;
   }
   if (tutPauseBadge) tutPauseBadge.classList.toggle('hidden', !paused);
-  if (tutorialCoachHud) tutorialCoachHud.classList.toggle('parry-alert', Boolean(alertGlow));
+  if (tutorialCoachHud) tutorialCoachHud.classList.toggle('parry-alert', Boolean(alertGlow || masteryReady));
   if (jumpBtn) jumpBtn.classList.toggle('tut-spotlight', spotlightBtn === 'jump');
   if (actionBtn) actionBtn.classList.toggle('tut-spotlight', spotlightBtn === 'action' || spotlightBtn === 'both_atk');
   if (skillBtn) skillBtn.classList.toggle('tut-spotlight', spotlightBtn === 'skill' || spotlightBtn === 'both_atk');
   if (hudHealBtn) hudHealBtn.classList.toggle('tut-spotlight', spotlightBtn === 'heal');
   if (hyperDashBtn) hyperDashBtn.classList.toggle('tut-spotlight', spotlightBtn === 'hyper');
   if (partyStaminaTutBtn) partyStaminaTutBtn.classList.toggle('tut-spotlight', spotlightBtn === 'pvp_stamina');
-  if (partySlot0TutBtn) partySlot0TutBtn.classList.toggle('tut-spotlight', spotlightBtn === 'pvp_slot0');
-  if (partySlot1TutBtn) partySlot1TutBtn.classList.toggle('tut-spotlight', spotlightBtn === 'pvp_slot1');
+  if (partySlot0TutBtn) partySlot0TutBtn.classList.toggle('tut-spotlight', spotlightBtn === 'pvp_slot0' || spotlightBtn === 'pvp_any_slot');
+  if (partySlot1TutBtn) partySlot1TutBtn.classList.toggle('tut-spotlight', spotlightBtn === 'pvp_slot1' || spotlightBtn === 'pvp_any_slot');
 }
 
 function pauseForTutorialPrompt(expectedInput, cfg) {
@@ -2430,7 +2821,9 @@ function beginTutorialLesson(stepNum) {
 function tryConsumePvpTutorialInput(kind) {
   if (tutorialSession.pausedForPrompt) {
     const exp = tutorialSession.expectedInput;
-    const matched = (kind === exp) || (exp === 'both_atk' && (kind === 'action' || kind === 'skill'));
+    const matched = (kind === exp)
+      || (exp === 'both_atk' && (kind === 'action' || kind === 'skill'))
+      || (exp === 'pvp_any_slot' && (kind === 'pvp_slot0' || kind === 'pvp_slot1'));
     if (!matched) return false;
     tutorialSession.pausedForPrompt = false;
     tutorialSession.expectedInput = null;
@@ -2443,84 +2836,34 @@ function tryConsumePvpTutorialInput(kind) {
     if (st === 1) {
       tutorialSession.subPhase = '1_jumped';
       tutorialSession.phaseTimer = 0;
-      setTutorialCoachDisplay({
-        badge: '🏎️ 竞速教学 1/7',
-        title: '漂亮！跃入高空涡轮加速环！',
-        main: '实战中多走高处加速环与高架滑轨，速度远快于平地骑行！',
-        cta: '✅ 落地后解锁【☄️ 超级冲刺条】……',
-        paused: false
-      });
     } else if (st === 2) {
       tutorialSession.subPhase = '2_boosting';
       tutorialSession.phaseTimer = 0;
-      setTutorialCoachDisplay({
-        badge: '⚡ 竞速教学 2/7 · 冲刺爆发中！',
-        title: '烈焰喷射！瞬间反超陪练阿坤！',
-        main: '超级冲刺完全免费，自动随时间和绿豆充能，攒满就果断按住超车！',
-        cta: '🔥 正在极速超车……',
-        paused: false
-      });
     } else if (st === 3) {
       tutorialSession.subPhase = '3_jumped';
       tutorialSession.phaseTimer = 0;
-      setTutorialCoachDisplay({
-        badge: '🔗 竞速教学 3/7',
-        title: '飞跃弹簧跳台！时刻留意对手实况小窗！',
-        main: '通过<b>📺 对手实况小窗</b>不仅能看距离差，还能在命中道具时实时欣赏对手破防翻车！',
-        cta: '✅ 落地后解锁底部【🎁 双槽整蛊道具栏】……',
-        paused: false
-      });
-    } else if (st === 4) {
-      tutorialSession.subPhase = '4_fired';
+    } else if (st === 8 && tutorialSession.subPhase === 'approach_8a') {
+      tutorialSession.subPhase = '8a_blocked';
       tutorialSession.phaseTimer = 0;
-      setTutorialCoachDisplay({
-        badge: '🎁 竞速教学 4/7 · 泥头车出击！',
-        title: '大运泥头车轰鸣出击！快看实况小窗！',
-        main: '所有攻击道具都会<b>自动锁定追踪对手</b>，无论对手领先多远都必中！',
-        cta: '🚛 泥头车正在创飞陪练阿坤……',
-        paused: false
-      });
-    } else if (st === 5) {
-      tutorialSession.subPhase = '5_shielded';
+    } else if (st === 8 && tutorialSession.subPhase === 'approach_8b') {
+      tutorialSession.subPhase = '8b_reflected';
       tutorialSession.phaseTimer = 0;
-      setTutorialCoachDisplay({
-        badge: '🥘 竞速教学 5/7 · 铁锅护体！',
-        title: '纯路人铁锅已架起！坐等飞弹反弹！',
-        main: '实战中手里常备一口<b>🥘 铁锅</b>或<b>🛡️ 金钟罩</b>，看到顶部来袭预警立即开启就能反败为胜！',
-        cta: '🥘 正在将篮球陨石雨反弹回对手头上……',
-        paused: false
-      });
-    } else if (st === 6) {
-      tutorialSession.subPhase = '6_struck';
+    } else if (st === 9 && tutorialSession.subPhase === 'approach_9a') {
+      tutorialSession.subPhase = '9a_done';
       tutorialSession.phaseTimer = 0;
-      setTutorialCoachDisplay({
-        badge: '⚔️ 竞速教学 6/7 · 贴脸重创！',
-        title: '重拳出击！打爆对手使其进入龟速爬行！',
-        main: '并排缠斗时果断交出<b>铁山靠 + 角色大招</b>，打空对手 100 血即可废掉他的全部加速！',
-        cta: '💥 正在击溃对手进入终点冲刺……',
-        paused: false
-      });
+    } else if (st === 9 && tutorialSession.subPhase === 'approach_9b') {
+      tutorialSession.subPhase = '9b_done';
+      tutorialSession.phaseTimer = 0;
     }
     return true;
   }
 
+  // Player-paced freedom: allow practicing jump, stamina sprint, items, and combat naturally inside each unlocked lesson!
   const st = tutorialSession.step;
-  if (st === 1 && tutorialSession.subPhase === 'approach' && kind === 'jump' && tutorialSession.targetX - player.x <= 210 && player.onGround) {
-    tutorialSession.subPhase = '1_jumped';
-    tutorialSession.phaseTimer = 0;
-    return true;
-  }
-  if (st === 3 && tutorialSession.subPhase === 'approach' && kind === 'jump' && tutorialSession.targetX - player.x <= 195 && player.onGround) {
-    tutorialSession.subPhase = '3_jumped';
-    tutorialSession.phaseTimer = 0;
-    return true;
-  }
-  if (st === 6 && tutorialSession.subPhase === '6_struck') {
-    return kind === 'action' || kind === 'skill';
-  }
-  if (st === 7) {
-    return kind === 'jump' || kind === 'action' || kind === 'skill' || kind === 'pvp_stamina';
-  }
+  if (kind === 'jump') return st !== 10 || tutorialSession.subPhase === '10_sprint';
+  if (kind === 'pvp_stamina') return st >= 2;
+  if (kind === 'pvp_slot0' || kind === 'pvp_slot1') return st >= 4 && st <= 8;
+  if (kind === 'action' || kind === 'skill') return st >= 9;
   return false;
 }
 
@@ -2767,12 +3110,12 @@ function completeTutorialHandoffToLiveRun(skipped = false) {
     } else {
       finishRunAndOpenHub();
     }
-    showToast('🏠 已退出双人竞速教程，随时可在车库或联机大厅点【🎓 竞速新手教程】重温！');
+    showToast('🏠 已退出双人竞速教程，随时可点车库顶栏【🎓 教程】重温全14种道具！');
     return;
   }
   if (skipped) {
     finishRunAndOpenHub();
-    showToast('🏠 已退出新手教学，随时可点顶栏【🎓 新手教程】重温！');
+    showToast('🏠 已退出新手教学，随时可点顶栏【🎓 教程】重温！');
     return;
   }
   startNewRun(store.save.selectedHero, 0, 0);
@@ -2781,7 +3124,7 @@ function completeTutorialHandoffToLiveRun(skipped = false) {
 
 function applyPvpProgressiveVisibility(stepNum) {
   if (jumpBtn) jumpBtn.classList.remove('tut-hidden-ctrl');
-  const unlockBattle = stepNum >= 6;
+  const unlockBattle = stepNum >= 9;
   for (const btn of [actionBtn, skillBtn]) {
     if (!btn) continue;
     const wasHidden = btn.classList.contains('tut-hidden-ctrl');
@@ -2811,7 +3154,46 @@ function applyPvpProgressiveVisibility(stepNum) {
       b.classList.add('tut-unlock-pop');
     }
   }
-  document.documentElement.classList.toggle('tutorial-hp-unlocked', stepNum >= 6);
+  document.documentElement.classList.toggle('tutorial-hp-unlocked', stepNum >= 8);
+}
+
+function showPvpLessonMasteryBar({ badge, title, main, replayLbl = '🔄 再练一次本节' }) {
+  if (tutorialSession.masteryReady) return;
+  tutorialSession.masteryReady = true;
+  tutorialSession.pausedForPrompt = false;
+  tutorialSession.expectedInput = null;
+  tutorialSession.callout = null;
+  tutorialSession.timeScale = 1.0;
+  playSfx('crate');
+  setTutorialCoachDisplay({
+    badge,
+    title,
+    main,
+    cta: '✅ 本节动作已实测成功！可点左侧<b>【🔄 再练一次】</b>反复试手，准备好了再点右侧<b>【✅ 已掌握 · 进入下一节】</b>（或按回车）！',
+    spotlightBtn: null,
+    paused: false,
+    alertGlow: true,
+    masteryReady: true,
+    replayLbl
+  });
+}
+
+function replayCurrentPvpTutorialLesson() {
+  if (!tutorialSession.active || tutorialSession.mode !== 'pvp') return;
+  ensureAudio();
+  playSfx('bean');
+  beginPvpTutorialLesson(tutorialSession.step);
+}
+
+function advanceCurrentPvpTutorialLesson() {
+  if (!tutorialSession.active || tutorialSession.mode !== 'pvp') return;
+  ensureAudio();
+  playSfx('crate');
+  if (tutorialSession.step < 10) {
+    beginPvpTutorialLesson(tutorialSession.step + 1);
+  } else {
+    openPvpTutorialGraduationModal();
+  }
 }
 
 function beginPvpTutorialLesson(stepNum) {
@@ -2819,14 +3201,15 @@ function beginPvpTutorialLesson(stepNum) {
   const pc = isPcControlHintMode();
   const h = getHero();
   tutorialSession.step = stepNum;
-  tutorialSession.subPhase = 'approach';
+  tutorialSession.subPhase = stepNum === 8 ? 'approach_8a' : (stepNum === 9 ? 'approach_9a' : 'approach');
   tutorialSession.pausedForPrompt = false;
+  tutorialSession.masteryReady = false;
   tutorialSession.expectedInput = null;
   tutorialSession.phaseTimer = 0;
   tutorialSession.callout = null;
   tutorialSession.timeScale = 1.0;
 
-  syncTutorialDots(stepNum, 7);
+  syncTutorialDots(stepNum, 10);
   applyPvpProgressiveVisibility(stepNum);
   const cfg = partyCtrl.configurePvpTutorialStep(stepNum);
   if (cfg && cfg.targetX !== undefined) {
@@ -2835,68 +3218,103 @@ function beginPvpTutorialLesson(stepNum) {
 
   if (stepNum === 1) {
     setTutorialCoachDisplay({
-      badge: '🏎️ 竞速教学 1/7',
-      title: '双人同屏冲线与高空涡轮加速环',
-      main: '欢迎来到双人实时互坑竞速！顶部已显示<b>双人实时赛道进度条</b>，前方即将遇到第一个<b>🌟 高空涡轮加速环</b>，接近时画面会自动暂停……',
-      cta: '👀 正在接近高空涡轮加速环……',
+      badge: '🏎️ 竞速教学 1/10 · 穿环加速',
+      title: '双人同屏冲线与【🌟 高空涡轮加速环】',
+      main: '本教程将按<b>你自己的节奏</b>带你亲手体验双人竞速核心机制与<b>全部 14 种整蛊道具</b>！前方半空出现<b>🌟 高空涡轮加速环</b>，接近时自动定格教你穿环超车……',
+      cta: '👀 正在驶向高空涡轮加速环……',
       paused: false
     });
   } else if (stepNum === 2) {
     playSfx('crate');
     setTutorialCoachDisplay({
-      badge: '⚡ 竞速教学 2/7 · 解锁超级冲刺条',
-      title: '新机制解锁：免费充能【☄️ 超级冲刺条】',
-      main: `左下角已解锁免费充能的<b>☄️ 超级冲刺条</b>（${pc ? '按住键盘 <b>Shift</b>' : '按住左侧冲刺条'}），马上定格实操反超！`,
-      cta: '👀 冲刺能量已充满 100%，准备爆发超车……',
+      badge: '⚡ 竞速教学 2/10 · 免费超级冲刺条',
+      title: '解锁【☄️ 按住超级冲刺条】（免费自动充能）',
+      main: `左侧已解锁免费自动充能的<b>☄️ 超级冲刺条</b>（${pc ? '按住键盘 <b>Shift</b>' : '按住左侧冲刺条'}）！吃绿豆与穿加速环都能极速回能，准备爆发反超对手！`,
+      cta: '👀 冲刺能量已充满 100%，准备定格实操……',
       paused: false
     });
   } else if (stepNum === 3) {
     playSfx('crate');
     setTutorialCoachDisplay({
-      badge: '🔗 竞速教学 3/7 · 解锁对手实况小窗',
-      title: '特色机制：【🔗 3D 弹力牵引绳】与【📺 对手实况小窗】',
-      main: '两车之间系有<b>3D 弹力牵引绳</b>，且屏幕已开启<b>📺 60帧对手实况小窗与对手血条</b>！接近前方弹簧跳台时定格讲解……',
-      cta: '👀 观察两车之间的弹力绳与对手实况小窗……',
+      badge: '🔗 竞速教学 3/10 · 弹力绳与实况窗',
+      title: '【🔗 3D 弹力牵引绳】追赶拉力 + 【📺 对手实况小窗】',
+      main: '落后时两车之间的<b>3D 弹力牵引绳</b>会产生强劲拉力拽你追赶！同时右上角已开启<b>60帧对手实况小窗</b>，对手挨打破防一清二楚！',
+      cta: '👀 体验弹力绳拉力，准备跃上弹簧跳台穿金环……',
       paused: false
     });
   } else if (stepNum === 4) {
     playSfx('crate');
     setTutorialCoachDisplay({
-      badge: '🎁 竞速教学 4/7 · 解锁双槽整蛊道具栏',
-      title: '新机制解锁：【🎁 双槽整蛊盲盒】（1/Q · 2/E）',
-      main: '底部已解锁<b>双槽恶搞道具栏</b>！前方正中央悬浮着一枚<b>🎁 彩蛋盲盒</b>，拾取后画面将自动定格教你发射整蛊武器！',
-      cta: '🎁 正在拾取前方的彩蛋盲盒……',
-      paused: false
+      badge: '🚀 道具实测 4/10 · 3款冲刺道具 (1~3/14)',
+      title: '冲刺类盲盒全体验：【💨绿豆氮气】·【🐔叮咚鸡血】·【🏀背带火箭】',
+      main: `右侧铁山靠上方已解锁<b>垂直双槽道具栏</b>（${pc ? '按 <b>1/Q</b> 或 <b>2/E</b>' : '大拇指轻松上移点 1/2 槽'}）！本节已为你依次装填 <b>3 款加速推进道具</b>，每用掉 1 个会自动装入第 3 个，请逐一释放感受不同爆发手感！`,
+      cta: pc ? '👉 按 <b>[1/Q]</b> 或 <b>[2/E]</b> 依次试用全部 3 款冲刺道具（进度 0/3）！' : '👉 点击右侧上方发光道具槽，依次试用全部 3 款冲刺道具（0/3）！',
+      spotlightBtn: 'pvp_any_slot',
+      paused: false,
+      alertGlow: true
     });
   } else if (stepNum === 5) {
     playSfx('crate');
     setTutorialCoachDisplay({
-      badge: '🥘 竞速教学 5/7 · 防御与反弹',
-      title: '对手反扑来袭！2号槽已装填【🥘 纯路人铁锅】',
-      main: '陪练阿坤恼羞成怒向你丢出了<b>🏀 篮球陨石雨</b>！等追踪飞弹逼近头顶时，画面会自动定格教你开启<b>铁锅完美反弹</b>！',
-      cta: '⚠️ 敌方恶搞飞弹正在逼近……',
-      paused: false
+      badge: '💥 道具实测 5/10 · 3款重装轰炸 (4~6/14)',
+      title: '重击整蛊全体验：【🚛大运泥头车】·【⚡闪电五连鞭】·【🐸狂笑奶蛙群】',
+      main: '前方陪练阿坤正在得瑟！本节装填了<b>3 款高伤重击道具</b>：<b>泥头车</b>直接把对手创扁减速、<b>闪电五连鞭</b>五道落雷劈麻对手并为自己提速、<b>奶蛙群</b>糊满对手屏幕！紧盯前方阿坤和右上小窗的夸张受击反馈！',
+      cta: pc ? '👉 按 <b>[1/Q]</b> 或 <b>[2/E]</b> 把 3 款重装道具全砸向阿坤（进度 0/3）！' : '👉 点击右侧垂直道具槽，把 3 款重装道具全砸向阿坤（0/3）！',
+      spotlightBtn: 'pvp_any_slot',
+      paused: false,
+      alertGlow: true
     });
   } else if (stepNum === 6) {
+    playSfx('crate');
+    setTutorialCoachDisplay({
+      badge: '🏀 道具实测 6/10 · 3款控场骚扰 (7~9/14)',
+      title: '控场整蛊全体验：【🐕大狗狂咬】·【🏀篮球陨石雨】·【🐱圆头耄耋阵】',
+      main: '本节装填<b>3 款持续控场道具</b>：<b>大狗狂咬</b>死咬车尾拖拽减速、<b>篮球陨石雨</b>天降斯伯丁连环砸头、<b>圆头耄耋阵</b>在赛道布下炸毛猫连环劫杀！',
+      cta: pc ? '👉 按 <b>[1/Q]</b> 或 <b>[2/E]</b> 依次释放全部 3 款控场道具（进度 0/3）！' : '👉 点击右侧垂直道具槽，依次释放全部 3 款控场道具（0/3）！',
+      spotlightBtn: 'pvp_any_slot',
+      paused: false,
+      alertGlow: true
+    });
+  } else if (stepNum === 7) {
+    playSfx('crate');
+    setTutorialCoachDisplay({
+      badge: '🦩 道具实测 7/10 · 3款奇袭抢夺 (10~12/14)',
+      title: '战术奇袭全体验：【🦩鹈鹕顺丰叼】·【🎵曼波顺手牵羊】·【📜律师函糊脸】',
+      main: '本节装填<b>3 款搞心态神技</b>：<b>鹈鹕顺丰叼</b>把领先对手往回叼退一大截、<b>曼波顺手牵羊</b>偷走对手道具或冲刺能量反哺自己、<b>律师函警告</b>巨幅红章遮挡对手视野！',
+      cta: pc ? '👉 按 <b>[1/Q]</b> 或 <b>[2/E]</b> 体验全部 3 款战术道具（进度 0/3）！' : '👉 点击右侧垂直道具槽，体验全部 3 款战术道具（0/3）！',
+      spotlightBtn: 'pvp_any_slot',
+      paused: false,
+      alertGlow: true
+    });
+  } else if (stepNum === 8) {
+    playSfx('crate');
+    setTutorialCoachDisplay({
+      badge: '🥘 道具实测 8/10 · 2款护盾反制 (13~14/14)',
+      title: '防御反杀全体验：【🛡️背带金钟罩】免伤 + 【🥘纯路人铁锅】反弹泥头车！',
+      main: '最后 2 款保命翻盘神装！阿坤正接连向你发射<b>🐸 奶蛙群</b>与<b>🚛 大运泥头车</b>，画面将在导弹临头时定格教你先开<b>金钟罩</b>无伤格挡，再用<b>铁锅</b>把泥头车原路反抽回去！',
+      cta: '⚠️ 敌方第一波恶搞飞弹正在逼近……',
+      paused: false
+    });
+  } else if (stepNum === 9) {
     playSfx('crate');
     player.skillCd = 0;
     player.flameFuel = 100;
     syncControlsUI();
     updateTopHUD();
     setTutorialCoachDisplay({
-      badge: '⚔️ 竞速教学 6/7 · 解锁贴脸肉搏',
-      title: `解锁生命条、【🐔 铁山靠】与【${h.skillLbl}】`,
-      main: '右下角已解锁战斗双键！并排追上残血阿坤时画面将定格，教你亲手打空对手生命值使其<b>车速归零龟速爬行</b>！',
-      cta: '👀 正在与残血陪练阿坤并排贴近……',
+      badge: '⚔️ 竞速教学 9/10 · 贴身肉搏破防',
+      title: `解锁战斗双键：【🐔 铁山靠】+【${h.skillLbl}】打空对手血条！`,
+      main: '双方并排追逐时可直接贴身肉搏！<b>先把对手 100 HP 打空的一方，会让对手陷入龟速爬行并清空无伤提速加成</b>！马上分两拍实操打爆阿坤！',
+      cta: '👀 正在与陪练阿坤并排贴近……',
       paused: false
     });
-  } else if (stepNum === 7) {
+  } else if (stepNum === 10) {
     playSfx('crate');
     setTutorialCoachDisplay({
-      badge: '🏁 毕业冲线 7/7 · 鹈鹕救援与夺冠',
-      title: '第 7 步：鹈鹕兜底不死法则 · 冲过终点夺得第一名！',
-      main: '最后牢记：<b>竞速模式绝不淘汰出局</b>——即便坠入深坑或被打空血，<b>🦩 鹈鹕顺丰救援</b>也会在 1.3 秒内把你安全叼回赛道继续冲！全速冲过前方<b>🏁 终点龙门</b>吧！',
-      cta: '🏆 正在冲过终点龙门夺冠……',
+      badge: '🏁 毕业冲线 10/10 · 鹈鹕救援与第一名观战',
+      title: '【🦩 鹈鹕坠坑救援】→ 夺冠冲线 → 体验【🔴 第一名实时观战对手】！',
+      main: '前方特意设有一处熔岩深渊：<b>直接驶入体验 1.3 秒🦩鹈鹕顺丰不死救援</b>，落地后冲过<b>🏁 终点龙门</b>夺得第一名，还能直接切换镜头<b>实时观战落后对手狼狈追赶</b>！',
+      cta: '🦩 正在驶向熔岩深渊，亲身体验竞速不死救援……',
       paused: false,
       alertGlow: true
     });
@@ -2914,13 +3332,13 @@ function openPvpTutorialGraduationModal() {
   } catch (_) {}
 
   if (firstReward) {
-    store.save.beans = (store.save.beans || 0) + 200;
+    store.save.beans = (store.save.beans || 0) + 500;
     store.markMutatedAndSave(true);
     if (pvpTutGradRewardBanner) {
-      pvpTutGradRewardBanner.textContent = '🎁 首次完成竞速教程奖励 +200 🌿 绿豆已入账！';
+      pvpTutGradRewardBanner.textContent = '🎁 首次完成全14种道具竞速教程奖励 +500 🌿 绿豆已入账！';
     }
   } else if (pvpTutGradRewardBanner) {
-    pvpTutGradRewardBanner.textContent = '✨ 竞速技巧温习通关！快去赛道整蛊对手夺取 +500🌿 吧！';
+    pvpTutGradRewardBanner.textContent = '✨ 全 14 种竞速道具温习通关！快去赛道整蛊对手夺取 +500🌿 吧！';
   }
 
   clearTutorialSpotlights();
@@ -2931,6 +3349,9 @@ function openPvpTutorialGraduationModal() {
 
 function startPvpTutorialRun() {
   ensureAudio();
+  clearLivePveRunSnapshot();
+  stopAccountSaveTutorial();
+  if (tutorialMenuOverlay) tutorialMenuOverlay.classList.add('hidden');
   if (tutorialWelcomeOverlay) tutorialWelcomeOverlay.classList.add('hidden');
   if (tutorialGradOverlay) tutorialGradOverlay.classList.add('hidden');
   if (pvpTutorialGradOverlay) pvpTutorialGradOverlay.classList.add('hidden');
@@ -2940,7 +3361,8 @@ function startPvpTutorialRun() {
 
   tutorialSession.active = true;
   tutorialSession.mode = 'pvp';
-  tutorialSession.totalSteps = 7;
+  tutorialSession.totalSteps = 10;
+  tutorialSession.masteryReady = false;
   tutorialSession.graduatingTimer = 0;
 
   document.documentElement.classList.add('tutorial-clean-mode', 'pvp-tutorial-mode');
@@ -2957,6 +3379,7 @@ function startPvpTutorialRun() {
     tutorialCoachHud.classList.remove('hidden');
     tutorialCoachHud.classList.remove('parry-alert');
   }
+  if (tutMasteryRow) tutMasteryRow.classList.add('hidden');
   if (toastPill) toastPill.classList.remove('show');
   beginPvpTutorialLesson(1);
 }
@@ -2977,6 +3400,9 @@ function tickPvpTutorialDirector(realDt) {
     return;
   }
 
+  // While mastery bar is shown on Steps 1..9, let player freely keep riding/testing without auto-jumping ahead!
+  if (tutorialSession.masteryReady) return;
+
   const pc = isPcControlHintMode();
   const h = getHero();
   const st = tutorialSession.step;
@@ -2984,22 +3410,26 @@ function tickPvpTutorialDirector(realDt) {
 
   if (st === 1) {
     if (tutorialSession.subPhase === 'approach') {
-      if (tutorialSession.targetX - player.x <= 122 && player.onGround) {
+      if (tutorialSession.targetX - player.x <= 124 && player.onGround) {
         pauseForTutorialPrompt('jump', {
-          badge: '🏎️ 竞速教学 1/7 · 已暂停',
-          title: '第 1 步：双人竞速目标与【🌟 高空涡轮加速环】',
-          main: '双人竞速比拼<b>谁先冲过终点线</b>（顶部进度条实时显示你与对手的名次距离）！前方半空有<b>🌟 高空涡轮加速环</b>，起跳穿过即可爆发加速并回复冲刺能量！',
+          badge: '🏎️ 竞速教学 1/10 · 已暂停',
+          title: '第 1 节：双人竞速目标与【🌟 高空涡轮加速环】',
+          main: '双人竞速比拼<b>谁先冲过 3500m 终点线</b>（顶部进度条实时显示双方名次与身位差）！起跳穿过前方的<b>🌟 高空涡轮加速环</b>即可爆发提速并回复冲刺能量！',
           cta: pc ? '👉 请按键盘 <b>[空格键]</b> 起跳穿过高空涡轮加速环！' : '👉 请点击左下角发光的 <b>[⬆️ 起跳]</b> 穿过高空涡轮加速环！',
           callout: { x: tutorialSession.targetX, y: getBaseSurfaceY(tutorialSession.targetX) - 148, text: '🌟 高空涡轮加速环 · 起跳穿环超车！', col: '#fde047' }
         });
+      } else if (player.x > tutorialSession.targetX + 120) {
+        beginPvpTutorialLesson(1);
       }
     } else if (tutorialSession.subPhase === '1_jumped') {
-      if ((pvpSt.ringCleared || player.x > tutorialSession.targetX + 85) && player.onGround) {
-        tutorialSession.phaseTimer += realDt;
-        if (tutorialSession.phaseTimer >= 0.30) {
-          addPopup('👏 涡轮加速环掌握！', player.x + 28, player.y - 96, '#4ade80', 19);
-          beginPvpTutorialLesson(2);
-        }
+      if ((pvpSt.ringCleared || player.x > tutorialSession.targetX + 90) && player.onGround) {
+        addPopup('👏 涡轮加速环掌握！', player.x + 28, player.y - 96, '#4ade80', 19);
+        showPvpLessonMasteryBar({
+          badge: '✅ 第 1/10 节已实测 · 涡轮加速环',
+          title: '漂亮！穿环瞬间爆发提速 + 回复超级冲刺能量！',
+          main: '赛道高处还分布着金色双倍加速环，越勤快跳上高空滑轨穿环，车速就越快！',
+          replayLbl: '🔄 再练穿环'
+        });
       }
     }
     return;
@@ -3010,18 +3440,23 @@ function tickPvpTutorialDirector(realDt) {
       tutorialSession.phaseTimer += realDt;
       if (tutorialSession.phaseTimer >= 0.35 && player.onGround) {
         pauseForTutorialPrompt('pvp_stamina', {
-          badge: '⚡ 竞速教学 2/7 · 新按键已暂停',
-          title: '第 2 步：免费充能的【☄️ 超级冲刺条】',
-          main: '不同于单人闯关，竞速模式左侧拥有<b>免费自动充能的超级冲刺条</b>（吃绿豆和穿加速环充能更快）！现在能量已满，立即启动冲刺甩开对手！',
-          cta: pc ? '👉 请按键盘 <b>[Shift键]</b>（或点击左侧发光的<b>超级冲刺条</b>）极速爆发！' : '👉 请按住左侧发光的 <b>[☄️ 按住超级冲刺]</b> 按钮！',
-          callout: { x: pvpSt.rivalX, y: pvpSt.rivalY - 138, text: '🏃 对手领先 · 按 Shift 超级冲刺反超！', col: '#38bdf8' }
+          badge: '⚡ 竞速教学 2/10 · 已暂停',
+          title: '第 2 节：免费自动充能的【☄️ 超级冲刺条】',
+          main: '竞速模式左下角拥有<b>免费自动充能的超级冲刺条</b>！现在能量已满，按住即可喷射蓝焰高速反超前方的陪练阿坤！',
+          cta: pc ? '👉 请按住键盘 <b>[Shift键]</b>（或左侧发光<b>超级冲刺条</b>）极速反超！' : '👉 请按住左侧发光的 <b>[☄️ 按住超级冲刺]</b> 按钮反超对手！',
+          callout: { x: pvpSt.rivalX, y: pvpSt.rivalY - 138, text: '🏃 对手在前方 · 按住 Shift 超级冲刺反超！', col: '#38bdf8' }
         });
       }
     } else if (tutorialSession.subPhase === '2_boosting') {
       tutorialSession.phaseTimer += realDt;
-      if (tutorialSession.phaseTimer >= 1.15) {
-        addPopup('👏 超级冲刺掌握！', player.x + 28, player.y - 96, '#4ade80', 19);
-        beginPvpTutorialLesson(3);
+      if ((pvpSt.isAheadOfRival && tutorialSession.phaseTimer >= 0.95) || tutorialSession.phaseTimer >= 1.65) {
+        addPopup('👏 超级冲刺反超成功！', player.x + 28, player.y - 96, '#4ade80', 19);
+        showPvpLessonMasteryBar({
+          badge: '✅ 第 2/10 节已实测 · 超级冲刺条',
+          title: '爽快反超！随时松手保留能量，关键弯道再爆发！',
+          main: '你可以继续按住 Shift 感受冲刺手感，准备好后再点下方按钮进入第 3 节。',
+          replayLbl: '🔄 再练冲刺'
+        });
       }
     }
     return;
@@ -3031,109 +3466,232 @@ function tickPvpTutorialDirector(realDt) {
     if (tutorialSession.subPhase === 'approach') {
       if (tutorialSession.targetX - player.x <= 115 && player.onGround) {
         pauseForTutorialPrompt('jump', {
-          badge: '🔗 竞速教学 3/7 · 已暂停',
-          title: '第 3 步：【🔗 3D 弹力牵引绳】与【📺 对手实况小窗】',
-          main: '看两车之间的<b>🔗 3D 弹力牵引绳</b>：落后时会获得弹性拉力助你追赶！同时屏幕已开启<b>📺 60帧对手实况小窗与对手血条</b>，随时掌握对手状态！现在起跳踩上弹簧跳台！',
-          cta: pc ? '👉 按 <b>[空格键]</b> 跃上弹簧跳台穿环加速！' : '👉 点击左下角 <b>[⬆️ 起跳]</b> 跃上弹簧跳台穿环加速！',
-          callout: { x: (player.x + pvpSt.rivalX) * 0.5, y: getBaseSurfaceY(player.x) - 118, text: '🔗 3D 弹力牵引绳 + 📺 实况小窗已开启！', col: '#ec4899' }
+          badge: '🔗 竞速教学 3/10 · 已暂停',
+          title: '第 3 节：【🔗 3D 弹力牵引绳】与【📺 对手实况小窗】',
+          main: '看两车之间的<b>🔗 3D 弹力牵引绳</b>：落后时会自动提供弹性拉力助你追赶！同时右上角<b>📺 对手实况小窗</b>让你60帧偷看对手动态！现在起跳借弹簧跳台穿过金色加速环！',
+          cta: pc ? '👉 按 <b>[空格键]</b> 跃上弹簧跳台穿金环！' : '👉 点击左下角 <b>[⬆️ 起跳]</b> 跃上弹簧跳台穿金环！',
+          callout: { x: tutorialSession.targetX + 60, y: getBaseSurfaceY(player.x) - 132, text: '🔗 弹力牵引绳 + 📺 右上角对手实况窗！', col: '#ec4899' }
         });
       }
     } else if (tutorialSession.subPhase === '3_jumped') {
-      if (player.x > tutorialSession.targetX + 145 && player.onGround) {
+      if (player.x > tutorialSession.targetX + 165 && player.onGround) {
+        addPopup('👏 牵引绳与实况小窗掌握！', player.x + 28, player.y - 96, '#4ade80', 19);
+        showPvpLessonMasteryBar({
+          badge: '✅ 第 3/10 节已实测 · 牵引绳与实况窗',
+          title: '核心赛道机制全部就位！接下来进入【全14种道具实测】！',
+          main: '从第 4 节到第 8 节，你将亲手把全部 14 种整蛊盲盒道具逐一试个痛快！',
+          replayLbl: '🔄 再练本节'
+        });
+      }
+    }
+    return;
+  }
+
+  // Lessons 4, 5, 6, 7: Player-Paced 3-Item Hands-On Showcase (12 Offensive/Rush/Tactical Items!)
+  if (st >= 4 && st <= 7) {
+    const usedCnt = pvpSt.stepUsedCount || 0;
+    const waitingEffect = pvpSt.activeMissilesOut || pvpSt.kunRocketActive;
+    if (usedCnt < 3) {
+      if (!pvpSt.slot0 && !pvpSt.slot1 && !pvpSt.queuedThird && !waitingEffect) {
+        partyCtrl.refillPvpTutorialStepItems(st);
+      }
+      if (usedCnt > 0 && tutCoachActionCta) {
+        const remain = 3 - usedCnt;
+        const nextHint = pc
+          ? `🔥 已实测 <b>${usedCnt}/3</b> 款！继续按 <b>[1/Q]</b> 或 <b>[2/E]</b> 试用剩余 <b>${remain}</b> 款道具！`
+          : `🔥 已实测 <b>${usedCnt}/3</b> 款！继续点右侧垂直道具栏试用剩余 <b>${remain}</b> 款道具！`;
+        setTextCached('pvpTutProgCta', null, '');
+        if (tutCoachActionCta.innerHTML !== nextHint) tutCoachActionCta.innerHTML = nextHint;
+      }
+    } else if (!waitingEffect) {
+      tutorialSession.phaseTimer += realDt;
+      if (tutorialSession.phaseTimer >= 0.85) {
+        const metaMap = {
+          4: {
+            badge: '✅ 第 4/10 节完成 · 3款冲刺道具已掌握 (3/14)',
+            title: '💨绿豆氮气 · 🐔叮咚鸡血(免泥潭减速) · 🏀背带火箭(无视地形飞行) 全部实测完毕！',
+            main: '觉得还没过瘾？点【🔄 再发一轮】可重新装填这 3 款冲刺道具继续飙车；点右侧绿色按钮进入重装轰炸篇！'
+          },
+          5: {
+            badge: '✅ 第 5/10 节完成 · 3款重装轰炸已掌握 (6/14)',
+            title: '🚛大运泥头车(-50HP压扁) · ⚡闪电五连鞭(电麻+自加速) · 🐸狂笑奶蛙群 全部实测完毕！',
+            main: '看到前方阿坤和右上小窗里被创扁电焦的惨状了吗？可随时重发一轮再炸一次，或进入控场骚扰篇！'
+          },
+          6: {
+            badge: '✅ 第 6/10 节完成 · 3款控场骚扰已掌握 (9/14)',
+            title: '🐕大狗狂咬(咬尾拖拽) · 🏀篮球陨石雨(连环砸扁) · 🐱圆头耄耋阵 全部实测完毕！',
+            main: '控场道具最适合在对手准备起跳穿环或冲刺时打断其节奏！准备好后进入战术奇袭篇！'
+          },
+          7: {
+            badge: '✅ 第 7/10 节完成 · 3款奇袭抢夺已掌握 (12/14)',
+            title: '🦩鹈鹕顺丰叼(强行叼退) · 🎵曼波顺手牵羊(偷道具/能量) · 📜律师函糊脸 全部实测完毕！',
+            main: '12 款进攻与冲刺道具已全部体验！下一节实测最后 2 款保命翻盘护盾（金钟罩 + 纯路人铁锅反弹）！'
+          }
+        };
+        const m = metaMap[st];
+        showPvpLessonMasteryBar({
+          badge: m.badge,
+          title: m.title,
+          main: m.main,
+          replayLbl: '🔄 再发一轮本组3道具'
+        });
+      }
+    }
+    return;
+  }
+
+  // Lesson 8: 8A (`timed_shield`) -> 8B (`pan_shield` reflecting Dump Truck!) (Items 13 & 14 / 14)
+  if (st === 8) {
+    if (tutorialSession.subPhase === 'approach_8a') {
+      if (pvpSt.incomingMissile && pvpSt.incomingMissile.prog >= 0.44) {
+        pauseForTutorialPrompt('pvp_slot0', {
+          badge: '🛡️ 道具实测 8/10 (1/2) · 来袭定格',
+          title: '第 13 款道具：【🛡️ 背带金钟罩】8秒护体无伤挡灾！',
+          main: '阿坤向你狂撒<b>🐸 狂笑奶蛙群</b>！右侧 1 号槽已装填<b>🛡️ 背带金钟罩</b>，开启后 8 秒内可<b>完全抵消一次敌方整蛊轰炸或坠坑惩罚</b>！',
+          cta: pc ? '👉 请按键盘 <b>[1键]</b> 或 <b>[Q键]</b>（或点右侧发光 1 号槽）开启金钟罩！' : '👉 请点击右侧发光的 <b>[1号槽 · 🛡️背带金钟罩]</b> 无伤挡下攻击！',
+          callout: { x: pvpSt.incomingMissile.x, y: pvpSt.incomingMissile.y - 28, text: '🐸 敌方奶蛙群临头 · 按 1/Q 开金钟罩免伤！', col: '#38bdf8' }
+        });
+      }
+    } else if (tutorialSession.subPhase === '8a_blocked') {
+      if (pvpSt.shieldBlockedDone) {
         tutorialSession.phaseTimer += realDt;
-        if (tutorialSession.phaseTimer >= 0.28) {
-          addPopup('👏 牵引绳与实况窗掌握！', player.x + 28, player.y - 96, '#4ade80', 19);
-          beginPvpTutorialLesson(4);
+        if (tutorialSession.phaseTimer >= 0.95) {
+          tutorialSession.subPhase = 'approach_8b';
+          tutorialSession.phaseTimer = 0;
+          partyCtrl.triggerPvpTutorialSubPhase8B();
+          setTutorialCoachDisplay({
+            badge: '🥘 道具实测 8/10 (2/2) · 泥头车来袭',
+            title: '第 14 款神装：【🥘 纯路人铁锅】完美反弹敌方大招！',
+            main: '阿坤急眼召唤了<b>🚛 大运泥头车</b>！等泥头车逼近头顶定格时开启 2 号槽<b>纯路人铁锅</b>，把泥头车原路反抽回去把阿坤自己创扁！',
+            cta: '⚠️ 敌方大运泥头车正在呼啸逼近……',
+            paused: false,
+            alertGlow: true
+          });
+        }
+      }
+    } else if (tutorialSession.subPhase === 'approach_8b') {
+      if (pvpSt.incomingMissile && pvpSt.incomingMissile.prog >= 0.46) {
+        pauseForTutorialPrompt('pvp_slot1', {
+          badge: '🥘 道具实测 8/10 (2/2) · 反弹定格',
+          title: '看准时机！开启【🥘 纯路人铁锅】原路反弹大运泥头车！',
+          main: '每当顶部弹出<b>⚠️ 来袭预警</b>，开启<b>🥘 纯路人铁锅</b>不仅自己毫发无伤，还会把泥头车、五连鞭、大狗等攻击<b>100% 反弹轰翻对手</b>！',
+          cta: pc ? '👉 请按键盘 <b>[2键]</b> 或 <b>[E键]</b>（或点右侧发光 2 号槽）铁锅反弹泥头车！' : '👉 请点击右侧发光的 <b>[2号槽 · 🥘纯路人锅]</b> 反弹泥头车！',
+          callout: { x: pvpSt.incomingMissile.x, y: pvpSt.incomingMissile.y - 32, text: '🚛 泥头车临头 · 按 2/E 铁锅原路反杀！', col: '#fde047' }
+        });
+      }
+    } else if (tutorialSession.subPhase === '8b_reflected') {
+      if (pvpSt.panReflectedDone && !pvpSt.activeMissilesOut) {
+        tutorialSession.phaseTimer += realDt;
+        if (tutorialSession.phaseTimer >= 1.05) {
+          addPopup('🎉 全14种竞速道具集齐掌握!!', player.x + 24, player.y - 104, '#fde047', 20);
+          showPvpLessonMasteryBar({
+            badge: '🎉 全 14/14 种竞速盲盒道具已全部亲手实测完毕！',
+            title: '金钟罩免伤 + 铁锅反杀大运泥头车完美达成！',
+            main: '恭喜你已亲手试遍全部 14 种竞速道具！想再弹一次泥头车可点左侧重练，或点右侧进入第 9 节贴身肉搏！',
+            replayLbl: '🔄 再练双护盾反弹'
+          });
         }
       }
     }
     return;
   }
 
-  if (st === 4) {
-    if (tutorialSession.subPhase === 'approach') {
-      if (pvpSt.slot0 === 'truck_isekai') {
-        pauseForTutorialPrompt('pvp_slot0', {
-          badge: '🎁 竞速教学 4/7 · 盲盒已装填',
-          title: '第 4 步：使用整蛊盲盒【🚛 大运泥头车】（1 / Q）',
-          main: '触碰<b>🎁 彩蛋盲盒</b>可获得泥头车、奶蛙群、少林巨钟等恶搞道具（最多存 2 个）！1 号槽已装填<b>🚛 大运泥头车</b>，立即发射把前方的阿坤创飞上天！',
-          cta: pc ? '👉 请按键盘 <b>[1键]</b> 或 <b>[Q键]</b>（或点击底部发光 1 号槽）发射泥头车！' : '👉 请点击屏幕底部发光的 <b>[1号槽 · 🚛泥头车创]</b> 按钮！',
-          callout: { x: pvpSt.rivalX, y: pvpSt.rivalY - 138, text: '🎯 锁定陪练阿坤 · 按 1/Q 召唤泥头车！', col: '#ef4444' }
-        });
-      } else if (player.x > tutorialSession.targetX + 95) {
-        beginPvpTutorialLesson(4);
-      }
-    } else if (tutorialSession.subPhase === '4_fired') {
+  // Lesson 9: 9A (`action` 铁山靠) -> 9B (`skill` 角色大招 KO!)
+  if (st === 9) {
+    if (tutorialSession.subPhase === 'approach_9a') {
       tutorialSession.phaseTimer += realDt;
-      if (pvpSt.step4HitDone && tutorialSession.phaseTimer >= 1.15) {
-        addPopup('👏 盲盒整蛊进攻掌握！', player.x + 28, player.y - 96, '#4ade80', 19);
-        beginPvpTutorialLesson(5);
-      }
-    }
-    return;
-  }
-
-  if (st === 5) {
-    if (tutorialSession.subPhase === 'approach') {
-      if (pvpSt.incomingMissile && pvpSt.incomingMissile.prog >= 0.48) {
-        pauseForTutorialPrompt('pvp_slot1', {
-          badge: '🥘 竞速教学 5/7 · 来袭定格',
-          title: '第 5 步：来袭预警与【🥘 纯路人铁锅】反弹反杀！',
-          main: '顶部弹出<b>⚠️ 来袭预警</b>！对手向你发射了追踪<b>🏀 篮球陨石雨</b>！趁飞弹落地前开启 2 号槽的<b>🥘 纯路人铁锅</b>，不仅完全免伤，还会将恶搞攻击<b>原路反弹</b>坑翻对手！',
-          cta: pc ? '👉 请按键盘 <b>[2键]</b> 或 <b>[E键]</b>（或点击底部发光 2 号槽）开启铁锅反弹！' : '👉 请点击屏幕底部发光的 <b>[2号槽 · 🥘纯路人锅]</b> 反弹攻击！',
-          callout: { x: pvpSt.incomingMissile.x, y: pvpSt.incomingMissile.y - 28, text: '🏀 敌方恶搞飞弹来袭 · 按 2/E 铁锅反弹！', col: '#facc15' }
+      if (tutorialSession.phaseTimer >= 0.28 && Math.abs(pvpSt.rivalX - player.x) <= 138 && player.onGround) {
+        pauseForTutorialPrompt('action', {
+          badge: '⚔️ 竞速教学 9/10 (1/2) · 并排定格',
+          title: '第 9 节（上）：【🐔 铁山靠】贴脸撞击削血！',
+          main: '与对手并排超车时，直接挥出零冷却<b>🐔 铁山靠</b>不仅能清理路面障碍，还能狠狠撞击对手削减其生命值并弹开身位！',
+          cta: pc ? '👉 请点击 <b>[鼠标左键 / J键]</b> 挥出铁山靠猛撞阿坤！' : '👉 请点击右下角发光的 <b>[🐔 铁山靠]</b> 猛撞阿坤！',
+          callout: { x: pvpSt.rivalX, y: pvpSt.rivalY - 138, text: '🐔 并排贴近 · 先来一记铁山靠撞击！', col: '#fb923c' }
         });
       }
-    } else if (tutorialSession.subPhase === '5_shielded') {
+    } else if (tutorialSession.subPhase === '9a_done') {
       tutorialSession.phaseTimer += realDt;
-      if (pvpSt.step5ReflectedDone && tutorialSession.phaseTimer >= 1.25) {
-        addPopup('👏 护盾反弹反制掌握！', player.x + 28, player.y - 96, '#4ade80', 19);
-        beginPvpTutorialLesson(6);
-      }
-    }
-    return;
-  }
-
-  if (st === 6) {
-    if (tutorialSession.subPhase === 'approach') {
-      tutorialSession.phaseTimer += realDt;
-      if (tutorialSession.phaseTimer >= 0.28 && Math.abs(pvpSt.rivalX - player.x) <= 135 && player.onGround) {
+      if (pvpSt.meleeHitDone && tutorialSession.phaseTimer >= 0.55) {
         player.skillCd = 0;
         player.flameFuel = 100;
         syncControlsUI();
-        pauseForTutorialPrompt('both_atk', {
-          badge: '⚔️ 竞速教学 6/7 · 并排定格',
-          title: '第 6 步：贴身肉搏破防 · 打空对手生命清零其车速！',
-          main: '竞速中双方各有 <b>100 HP</b>（持续无伤骑行最高可提速至 <b>2.0 倍</b>；一旦<b>被打空血，对手会陷入龟速爬行且累积提速清零</b>）！现在用<b>🐔 铁山靠</b>或<b>角色大招</b>打爆残血阿坤！',
-          cta: pc ? '👉 点击 <b>[鼠标左键·铁山靠]</b> 或 <b>[鼠标右键·角色大招]</b> 打爆对手！' : `👉 点击右下角发光的 <b>[🐔 铁山靠]</b> 或 <b>[${h.skillIcon || '✨'} ${h.skillLbl}]</b> 打爆对手！`,
-          callout: { x: pvpSt.rivalX, y: pvpSt.rivalY - 138, text: '❤️ 对手仅剩20HP · 铁山靠或大招打爆他！', col: '#fb7185' }
+        tutorialSession.subPhase = 'approach_9b';
+        tutorialSession.phaseTimer = 0;
+      } else if (!pvpSt.meleeHitDone && tutorialSession.phaseTimer >= 1.2) {
+        beginPvpTutorialLesson(9);
+      }
+    } else if (tutorialSession.subPhase === 'approach_9b') {
+      if (Math.abs(pvpSt.rivalX - player.x) <= 175) {
+        player.skillCd = 0;
+        player.flameFuel = 100;
+        syncControlsUI();
+        pauseForTutorialPrompt('skill', {
+          badge: '⚔️ 竞速教学 9/10 (2/2) · 大招终结',
+          title: `第 9 节（下）：释放【${h.skillIcon || '✨'} ${h.skillLbl}】打空阿坤血条！`,
+          main: '阿坤已被撞至残血！现在释放<b>角色专属大招</b>直接打空他的生命条——<b>被打空血的对手将陷入龟速爬行，且累积的无伤提速瞬间归零</b>！',
+          cta: pc ? '👉 请点击 <b>[鼠标右键 / K键]</b> 释放角色大招打爆阿坤！' : `👉 请点击右下角发光的 <b>[${h.skillIcon || '✨'} ${h.skillLbl}]</b> 打爆阿坤！`,
+          callout: { x: pvpSt.rivalX, y: pvpSt.rivalY - 138, text: '💥 残血阿坤 · 释放大招清空他血条！', col: '#f43f5e' }
         });
       }
-    } else if (tutorialSession.subPhase === '6_struck') {
+    } else if (tutorialSession.subPhase === '9b_done') {
       player.skillCd = 0;
       if (h.id === 'nailong') player.flameFuel = Math.max(player.flameFuel, 85);
       tutorialSession.phaseTimer += realDt;
-      if (pvpSt.step6KoDone && tutorialSession.phaseTimer >= 0.90) {
-        addPopup('👏 贴脸破防击溃掌握！', player.x + 28, player.y - 96, '#4ade80', 19);
-        beginPvpTutorialLesson(7);
-      } else if (!pvpSt.step6KoDone && tutorialSession.phaseTimer >= 1.6) {
-        beginPvpTutorialLesson(6);
+      if (pvpSt.skillKoDone && tutorialSession.phaseTimer >= 0.90) {
+        addPopup('👏 贴身连招破防掌握！', player.x + 28, player.y - 96, '#4ade80', 19);
+        showPvpLessonMasteryBar({
+          badge: '✅ 第 9/10 节已实测 · 铁山靠 + 大招破防',
+          title: '漂亮！阿坤血条归零陷入原地龟速爬行！',
+          main: '最后一节：体验【🦩 鹈鹕坠坑救援】、冲过终点夺冠，并试用全新【🔴 第一名实时观战对手】功能！',
+          replayLbl: '🔄 再揍一次阿坤'
+        });
+      } else if (!pvpSt.skillKoDone && tutorialSession.phaseTimer >= 1.6) {
+        beginPvpTutorialLesson(9);
       }
     }
     return;
   }
 
-  if (st === 7) {
-    if (pvpSt.crossedFinish) {
-      addPopup('🥇 第一名冲线毕业！！', player.x + 24, player.y - 108, '#fde047', 22);
-      tutorialSession.graduatingTimer = 0.85;
+  // Lesson 10: Live Pelican Pit Rescue -> Finish Sprint -> Live Rival Spectator Cam -> +500 Beans Graduation!
+  if (st === 10) {
+    if (tutorialSession.subPhase === 'approach') {
+      if (pvpSt.respawningNow || pvpSt.pitRescuedDone) {
+        tutorialSession.subPhase = '10_sprint';
+        setTutorialCoachDisplay({
+          badge: '🦩 毕业冲线 10/10 · 鹈鹕顺丰救援生效！',
+          title: '看！竞速模式坠坑绝不出局，1.3秒安全叼回赛道！',
+          main: '落地后踩上前方加速带全速冲过<b>🏁 终点龙门</b>夺得第一名，冲线后镜头会自动切到<b>🔴 实时观战对手视角</b>！',
+          cta: '🏁 全力冲过前方终点龙门夺冠！',
+          paused: false,
+          alertGlow: true
+        });
+      } else if (player.x > tutorialSession.targetX - 360) {
+        // Player skillfully jumped right over the lava pit — reward & let them cross finish!
+        tutorialSession.subPhase = '10_sprint';
+      }
+    } else if (tutorialSession.subPhase === '10_sprint') {
+      if (pvpSt.crossedFinish) {
+        tutorialSession.subPhase = '10_spectating';
+        tutorialSession.phaseTimer = 0;
+        addPopup('🥇 第一名冲线！开启实时观战！', player.x + 24, player.y - 108, '#fde047', 21);
+        if (tutorialCoachHud) tutorialCoachHud.classList.add('hidden');
+      }
+    } else if (tutorialSession.subPhase === '10_spectating') {
+      tutorialSession.phaseTimer += realDt;
+      if (pvpSt.rivalFinished || tutorialSession.phaseTimer >= 6.5) {
+        tutorialSession.graduatingTimer = 0.45;
+      }
     }
   }
 }
 
 function startTutorialRun() {
+  clearLivePveRunSnapshot();
+  stopAccountSaveTutorial();
+  if (tutorialMenuOverlay) tutorialMenuOverlay.classList.add('hidden');
   if (tutorialWelcomeOverlay) tutorialWelcomeOverlay.classList.add('hidden');
   if (tutorialGradOverlay) tutorialGradOverlay.classList.add('hidden');
+  if (pvpTutorialGradOverlay) pvpTutorialGradOverlay.classList.add('hidden');
   if (partyCtrl && partyCtrl.isActive()) {
     partyCtrl.exitPartyToHub();
   }
@@ -3698,6 +4256,7 @@ function startNewRun(heroId, startDistMeters = 0, boostMeters = 0) {
 
   hubOverlay.classList.add('hidden');
   state = 'PLAYING';
+  player.airCampSec = 0;
   playSfx('crate');
 
   if (preSelectedDeathBoost > 0) {
@@ -3729,6 +4288,7 @@ function startNewRun(heroId, startDistMeters = 0, boostMeters = 0) {
   refreshBuffChips();
   syncControlsUI();
   updateTopHUD();
+  saveLivePveRunSnapshot();
 }
 
 const hudHealBtn = document.getElementById('hudHealBtn');
@@ -3911,11 +4471,134 @@ function resumeFromPause() {
   }
 }
 
+// ==================== PVE LIVE RUN SNAPSHOT (F5 PAGE REFRESH AUTO-RESUME) ====================
+const PVE_LIVE_SNAPSHOT_KEY = 'pelican_live_pve_run_v1';
+
+function saveLivePveRunSnapshot() {
+  if (tutorialSession.active || (partyCtrl && partyCtrl.isActive())) return;
+  if (state !== 'PLAYING' && state !== 'PAUSED') return;
+  if (getActiveAccountOwnerTag() !== activeRunOwner) return;
+  try {
+    sessionStorage.setItem(PVE_LIVE_SNAPSHOT_KEY, JSON.stringify({
+      owner: activeRunOwner,
+      heroId: activeRunHeroId || store.save.selectedHero || 'nailong',
+      x: Math.round(player.x),
+      dist: runStats.dist || 0,
+      singleRunDist: runStats.singleRunDist || 0,
+      runStartDist: runStartDist || 0,
+      prevBestSingleRun: prevBestSingleRun || 0,
+      beans: runStats.beans || 0,
+      bankedRunBeans: bankedRunBeans || 0,
+      bossKills: runStats.bossKills || 0,
+      hp: Math.max(1, Math.round(player.hp || player.maxHp || 100)),
+      maxHp: Math.max(1, Math.round(player.maxHp || 100)),
+      stageIndex: stageIndex || 0,
+      superCharge: Math.round((superCharge || 0) * 10) / 10,
+      reviveUsed: Boolean(runStats.reviveUsed),
+      healBuysUsed: runStats.healBuysUsed || 0,
+      deathDashUsed: Boolean(runStats.deathDashUsed),
+      activeRunStartMs: activeRunStartMs || Date.now(),
+      ts: Date.now()
+    }));
+  } catch (_) {}
+}
+
+function clearLivePveRunSnapshot() {
+  try { sessionStorage.removeItem(PVE_LIVE_SNAPSHOT_KEY); } catch (_) {}
+}
+
+function tryRestoreLivePveRunSnapshot() {
+  try {
+    const raw = sessionStorage.getItem(PVE_LIVE_SNAPSHOT_KEY);
+    if (!raw) return false;
+    const snap = JSON.parse(raw);
+    if (!snap || !snap.ts || Date.now() - snap.ts > 30 * 60 * 1000) {
+      clearLivePveRunSnapshot();
+      return false;
+    }
+    const curOwner = getActiveAccountOwnerTag();
+    if (snap.owner !== curOwner) {
+      clearLivePveRunSnapshot();
+      return false;
+    }
+    if ((snap.singleRunDist || 0) < 3 && (snap.beans || 0) < 1) {
+      clearLivePveRunSnapshot();
+      return false;
+    }
+
+    startNewRun(snap.heroId || store.save.selectedHero || 'nailong', snap.runStartDist || 0, 0);
+    quickDashWindowTimer = 0;
+    if (quickDashWrap) quickDashWrap.classList.add('hidden');
+
+    activeRunOwner = curOwner;
+    activeRunStartMs = snap.activeRunStartMs || Date.now();
+    activeRunLogged = false;
+    runStartDist = Math.max(0, Number(snap.runStartDist) || 0);
+    prevBestSingleRun = Math.max(0, Number(snap.prevBestSingleRun) || store.save.bestSingleRun || 0);
+    bankedRunBeans = Math.max(0, Number(snap.bankedRunBeans) || 0);
+    runStats.dist = Math.max(runStartDist, Number(snap.dist) || 0);
+    runStats.singleRunDist = Math.max(0, Number(snap.singleRunDist) || 0);
+    runStats.beans = Math.max(bankedRunBeans, Number(snap.beans) || 0);
+    runStats.bossKills = Math.max(0, Number(snap.bossKills) || 0);
+    runStats.reviveUsed = Boolean(snap.reviveUsed);
+    runStats.healBuysUsed = Math.max(0, Number(snap.healBuysUsed) || 0);
+    runStats.deathDashUsed = Boolean(snap.deathDashUsed);
+
+    player.x = Math.max(120 + runStats.dist * 18, Number(snap.x) || 120);
+    player.y = getBaseSurfaceY(player.x);
+    smoothCamRefY = player.y;
+    player.maxHp = Math.max(50, Number(snap.maxHp) || getHeroMaxHpFromSave(store.save, activeRunHeroId));
+    player.hp = Math.min(player.maxHp, Math.max(1, Number(snap.hp) || player.maxHp));
+    player.displayHp = player.hp;
+    player.trailHp = player.hp;
+    player.invulnTimer = 2.4;
+    superCharge = Math.min(99, Math.max(0, Number(snap.superCharge) || 0));
+    stageIndex = Math.floor(runStats.dist / STAGE_SPAN_M) % STAGES.length;
+    prevStageIndex = stageIndex;
+
+    pits.length = 0; mudZones.length = 0; iceZones.length = 0; snowballs.length = 0;
+    enemies.length = 0; laserGates.length = 0; rails.length = 0; beans.length = 0;
+    worldProps.length = 0; cashTrucks.length = 0; enemyShots.length = 0;
+    nextSpawnX = player.x + 340;
+    nextBossDist = runStats.dist + 140;
+    nextTruckDist = runStats.dist + 160;
+    nextPropDist = runStats.dist + 55;
+    nextShieldDist = runStats.dist + 240;
+    nextHealDist = runStats.dist + 320;
+    nextFlagDist = (Math.floor(runStats.dist / 500) + 1) * 500;
+    if (prevBestSingleRun >= 25 && runStats.singleRunDist < prevBestSingleRun) {
+      recordFlag = {
+        x: 120 + (runStartDist + prevBestSingleRun) * 18,
+        singleDist: prevBestSingleRun,
+        passed: false
+      };
+    } else {
+      recordFlag = null;
+    }
+    spawnWorldAhead();
+    refreshHealSupplyUI();
+    updateTopHUD();
+    syncControlsUI();
+    pauseGame(false);
+    if (pauseModalTitle) pauseModalTitle.textContent = `🔄 已恢复刷新前进度（${runStats.singleRunDist}m）`;
+    showToast(`🔄 已无缝恢复刷新前的闯关进度（${runStats.singleRunDist}m）！`);
+    return true;
+  } catch (_) {
+    clearLivePveRunSnapshot();
+    return false;
+  }
+}
+
 function openGameOverModal() {
   stopBossBgm();
+  clearLivePveRunSnapshot();
   const curSingle = runStats.singleRunDist;
   const isNewRecord = curSingle > prevBestSingleRun && curSingle >= 15;
   bankRunProgress(true);
+  if (!activeRunLogged && !tutorialSession.active && !(partyCtrl && partyCtrl.isActive()) && curSingle >= 5) {
+    activeRunLogged = true;
+    logFinishedRun({ mode: 'pve', extraNote: lastDamageMeta.cause || 'gameover' });
+  }
 
   state = 'GAMEOVER';
   const bestEver = Math.max(store.save.bestSingleRun || 0, curSingle);
@@ -4145,8 +4828,13 @@ window.addEventListener('blur', () => {
 
 function finishRunAndOpenHub() {
   clearTutorialSpotlights();
+  clearLivePveRunSnapshot();
   stopBossBgm();
   bankRunProgress(true);
+  if (!activeRunLogged && !tutorialSession.active && !(partyCtrl && partyCtrl.isActive()) && (runStats.singleRunDist || 0) >= 5) {
+    activeRunLogged = true;
+    logFinishedRun({ mode: 'pve', extraNote: 'hub_exit' });
+  }
   state = 'HUB';
   pauseOverlay.classList.add('hidden');
   gameOverOverlay.classList.add('hidden');
@@ -4157,6 +4845,7 @@ function finishRunAndOpenHub() {
   showToast(`🏁 本命狂飙 ${runStats.singleRunDist}m · 收获 +${runStats.beans}🌿`);
   refreshHubUI();
   hubOverlay.classList.remove('hidden');
+  maybeShowStrongAccountNudge();
 }
 
 launchBtn.addEventListener('click', () => {
@@ -4170,6 +4859,7 @@ pauseResumeBtn.addEventListener('click', resumeFromPause);
 pauseCloseX.addEventListener('click', resumeFromPause);
 pauseRestartBtn.addEventListener('click', () => {
   pauseOverlay.classList.add('hidden');
+  clearLivePveRunSnapshot();
   bankRunProgress(true);
   startNewRun(activeRunHeroId, store.save.selectedCheckpoint, 0);
 });
@@ -4189,6 +4879,12 @@ goHubBtn.addEventListener('click', () => {
   gameOverOverlay.classList.add('hidden');
   finishRunAndOpenHub();
 });
+if (goCloseTopBtn) {
+  goCloseTopBtn.addEventListener('click', () => {
+    gameOverOverlay.classList.add('hidden');
+    finishRunAndOpenHub();
+  });
+}
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
@@ -4208,15 +4904,40 @@ function getStageForWorldX(wx) {
   return STAGES[Math.floor(d / STAGE_SPAN_M) % STAGES.length];
 }
 
-function spawnAerialDronePair(baseX, count = 2) {
-  for (let d = 0; d < count; d++) {
-    enemies.push({
-      x: baseX + d * 88,
-      kind: 'drone',
-      flyH: 108 + (d % 2) * 28,
-      hit: false,
-      phase: d * 1.4
-    });
+function spawnAerialDronePair(baseX, count = 2, tier = 1) {
+  const skyCount = Math.max(count, tier >= 2 ? 3 : 2);
+  for (let d = 0; d < skyCount; d++) {
+    const roll = Math.random();
+    if (d === skyCount - 1 && (tier >= 2 || roll < 0.45)) {
+      // High-altitude aerial sniper drone firing aimed orbs at airborne riders!
+      enemies.push({
+        x: baseX + d * 88 + 18,
+        kind: 'drone',
+        isSkyShooter: true,
+        shotDone: false,
+        windupTimer: 0.42,
+        flyH: 175 + (d % 2) * 38,
+        hit: false,
+        phase: d * 1.4
+      });
+    } else if (d === 1 && roll < 0.48) {
+      // Jetpack un-stompable spiky_cat patrolling upper airspace (requires 铁山靠 / Skill or altitude weave!)
+      enemies.push({
+        x: baseX + d * 86,
+        kind: 'spiky_cat',
+        flyH: 156 + Math.floor(Math.random() * 48),
+        hit: false,
+        phase: d * 1.2
+      });
+    } else {
+      enemies.push({
+        x: baseX + d * 84,
+        kind: 'drone',
+        flyH: 112 + (d % 3) * 44,
+        hit: false,
+        phase: d * 1.3
+      });
+    }
   }
 }
 
@@ -4292,28 +5013,31 @@ function spawnWorldAhead() {
   const grad = getSurvivalGradient(runStats.singleRunDist);
   const gapStep = grad.chunkGap;
 
-  // 100% FULL stage spawning at all times (normal, Hyper Dash, HeadStart, AND Boss fights!)
-  while (nextSpawnX < player.x + 1650) {
+  // 100% FULL stage spawning at all times (normal, 5.0x Hyper Dash, HeadStart, AND Boss fights!)
+  const spawnHorizon = player.x + (player.hyperDashActive ? 3100 : 1920);
+  while (nextSpawnX < spawnHorizon) {
     const st = getStageForWorldX(nextSpawnX);
     const chunkDist = Math.max(0, (nextSpawnX - 120) / 18);
     const r = Math.random();
 
     trySpawnTrackPropsAt(chunkDist, nextSpawnX);
 
-    // Pure Distance-Scaled Ambush Saws & Staggered High+Low Crossfire!
+    // Pure Distance-Scaled Ambush Saws + Multi-Altitude Sky Hover Saws!
     const allowPit = !activeBoss || player.hyperDashActive;
     const willBePit = allowPit && ((st.id === 'site' && r < 0.34) || (st.id === 'volcano' && r < 0.36));
-    if (!willBePit && Math.random() < grad.ambushProb) {
+    if (!willBePit && Math.random() < Math.min(0.84, grad.ambushProb + 0.10)) {
       const hx = nextSpawnX + 135;
       const sawSpd = -(165 + grad.tier * 38);
-      if (Math.random() < grad.doubleProb) {
-        // Staggered High+Low Crossfire: Jump ground buzzsaw -> duck/land under aerial hover-saw!
+      if (Math.random() < Math.max(0.28, grad.doubleProb)) {
+        // 3-Layer Staggered Ground + High-Sky Crossfire!
         enemyShots.push({ kind: 'spike_roller', x: hx, y: getBaseSurfaceY(hx), vx: sawSpd, parried: false, rot: 0 });
-        enemyShots.push({ kind: 'hover_saw', x: hx + 158, y: getBaseSurfaceY(hx + 158) - 102, hOff: 102, vx: sawSpd * 0.94, parried: false, rot: 0 });
-      } else if (Math.random() < 0.56) {
+        const skyH = 148 + Math.floor(Math.random() * 68);
+        enemyShots.push({ kind: 'hover_saw', x: hx + 162, y: getBaseSurfaceY(hx + 162) - skyH, hOff: skyH, baseHOff: skyH, oscAmp: 26, phase: Math.random() * 6, vx: sawSpd * 0.94, parried: false, rot: 0 });
+      } else if (Math.random() < 0.42) {
         enemyShots.push({ kind: 'spike_roller', x: hx + 30, y: getBaseSurfaceY(hx + 30), vx: sawSpd, parried: false, rot: 0 });
       } else {
-        enemyShots.push({ kind: 'hover_saw', x: hx + 30, y: getBaseSurfaceY(hx + 30) - 98, hOff: 98, vx: sawSpd, parried: false, rot: 0 });
+        const skyH = Math.random() < 0.58 ? (158 + Math.floor(Math.random() * 64)) : 98;
+        enemyShots.push({ kind: 'hover_saw', x: hx + 30, y: getBaseSurfaceY(hx + 30) - skyH, hOff: skyH, baseHOff: skyH, oscAmp: skyH > 130 ? 24 : 0, phase: Math.random() * 6, vx: sawSpd, parried: false, rot: 0 });
       }
     }
     const extraPitW = grad.tier >= 5 ? 48 : (grad.tier >= 3 ? 30 : (grad.tier >= 2 ? 16 : 0));
@@ -4327,6 +5051,7 @@ function spawnWorldAhead() {
           const mk = k === 2 ? 'shield_lawyer' : (k === 0 ? 'dribbler' : 'boar_frog');
           enemies.push({ x: sx + 70 + k * 52, kind: mk, shielded: k === 2, windupTimer: 0.78, chargePrep: prepTime, shotDone: false, hit: false, phase: k * 0.6 });
         }
+        spawnAerialDronePair(sx + 125, 2, grad.tier);
         for (let i = 0; i < 4; i++) {
           const bx = sx + 60 + i * 46;
           if (beans.length < 280) beans.push({ x: bx, y: getBaseSurfaceY(bx) - 172, val: 1, giant: i === 2, taken: false });
@@ -4337,7 +5062,7 @@ function spawnWorldAhead() {
         for (let k = 0; k < 3; k++) {
           enemies.push({ x: fx + 95 + k * 50, kind: k === 1 ? 'spiky_cat' : 'pelican_guard', hit: false, phase: k });
         }
-        spawnAerialDronePair(fx + 135, grad.tier >= 3 ? 2 : 1);
+        spawnAerialDronePair(fx + 125, grad.tier >= 3 ? 3 : 2, grad.tier);
       }
       nextSpawnX += gapStep;
     } else if (st.id === 'site') {
@@ -4345,13 +5070,14 @@ function spawnWorldAhead() {
         const px = nextSpawnX + 95;
         pits.push({ x: px, len: 122 + extraPitW, bridged: false });
         rails.push({ x: px - 35, len: 215, hOff: 136, kind: 'suspenders', energizedTimer: 0 });
-        spawnAerialDronePair(px + 45, grad.tier >= 3 ? 2 : 1);
+        spawnAerialDronePair(px + 45, grad.tier >= 3 ? 3 : 2, grad.tier);
       } else {
-        const bx = nextSpawnX + 80, by = getBaseSurfaceY(bx);
+        const bx = nextSpawnX + 80;
         for (let k = 0; k < 3; k++) {
           const mk = k === 0 ? 'shield_lawyer' : (k === 2 ? 'boar_frog' : 'spiky_cat');
           enemies.push({ x: bx + 15 + k * 52, kind: mk, shielded: k === 0, windupTimer: 0.78, chargePrep: prepTime, shotDone: false, hit: false, phase: k });
         }
+        spawnAerialDronePair(bx + 70, 2, grad.tier);
       }
       nextSpawnX += gapStep;
     } else if (st.id === 'swamp') {
@@ -4362,7 +5088,7 @@ function spawnWorldAhead() {
         lilyPads.push({ x: mx + 165, yOff: 62, anim: 0 });
         enemies.push({ x: mx + 108, kind: 'spiky_cat', hit: false, phase: 0 });
         enemies.push({ x: mx + 210, kind: 'boar_frog', chargePrep: prepTime, hit: false, phase: 1 });
-        spawnAerialDronePair(mx + 115, 1);
+        spawnAerialDronePair(mx + 105, 2, grad.tier);
       } else {
         const gx = nextSpawnX + 45;
         rails.push({ x: gx + 36, len: 235, hOff: 148, kind: 'suspenders', energizedTimer: 0 });
@@ -4370,6 +5096,7 @@ function spawnWorldAhead() {
           const mk = k === 1 ? 'spiky_cat' : (k === 2 ? 'boar_frog' : 'shield_lawyer');
           enemies.push({ x: gx + 85 + k * 52, kind: mk, shielded: k === 0, windupTimer: 0.78, chargePrep: prepTime, hit: false, phase: k });
         }
+        spawnAerialDronePair(gx + 110, 2, grad.tier);
       }
       nextSpawnX += gapStep;
     } else if (st.id === 'snow') {
@@ -4381,12 +5108,13 @@ function spawnWorldAhead() {
         for (let k = 0; k < 3; k++) {
           enemies.push({ x: ix + 95 + k * 52, kind: k % 2 === 0 ? 'snowman' : 'spiky_cat', hit: false, phase: k });
         }
+        spawnAerialDronePair(ix + 150, 2, grad.tier);
         for (let i = 0; i < 4; i++) {
           const bx = ix + 95 + i * 44;
           if (beans.length < 280) beans.push({ x: bx, y: getBaseSurfaceY(bx) - 174, val: 1, giant: i === 3, taken: false });
         }
       } else {
-        spawnAerialDronePair(ix + 140, 2);
+        spawnAerialDronePair(ix + 125, 3, grad.tier);
         for (let k = 0; k < 3; k++) {
           enemies.push({ x: ix + 100 + k * 52, kind: k === 1 ? 'boar_frog' : 'snowman', chargePrep: prepTime, hit: false, phase: k });
         }
@@ -4398,6 +5126,7 @@ function spawnWorldAhead() {
         pits.push({ x: vx, len: 126 + extraPitW, bridged: false, lava: true });
         lilyPads.push({ x: vx + 62, yOff: 32, anim: 0 });
         rails.push({ x: vx - 28, len: 210, hOff: 142, kind: 'suspenders', energizedTimer: 0 });
+        spawnAerialDronePair(vx + 55, 2, grad.tier);
       } else {
         const vx = nextSpawnX + 48;
         laserGates.push({ x: vx + 150, hacked: false });
@@ -4405,13 +5134,13 @@ function spawnWorldAhead() {
           const mk = k % 2 === 0 ? 'boar_frog' : 'spiky_cat';
           enemies.push({ x: vx + 45 + k * 52, kind: mk, chargePrep: prepTime, hit: false, phase: k });
         }
-        spawnAerialDronePair(vx + 105, grad.tier >= 2 ? 2 : 1);
+        spawnAerialDronePair(vx + 95, grad.tier >= 2 ? 3 : 2, grad.tier);
       }
       nextSpawnX += gapStep;
     } else if (st.id === 'bamboo') {
       const bx = nextSpawnX + 40;
       rails.push({ x: bx + 36, len: 240, hOff: 122, kind: 'suspenders', energizedTimer: 0 });
-      spawnAerialDronePair(bx + 125, 2);
+      spawnAerialDronePair(bx + 115, 3, grad.tier);
       for (let k = 0; k < 3; k++) {
         const mk = k === 0 ? 'shield_lawyer' : (k === 1 ? 'spiky_cat' : 'boar_frog');
         enemies.push({ x: bx + 78 + k * 52, kind: mk, shielded: k === 0, windupTimer: 0.78, chargePrep: prepTime, shotDone: false, hit: false, phase: k });
@@ -4429,7 +5158,7 @@ function spawnWorldAhead() {
         const mk = k === 0 ? 'shield_lawyer' : (k === 2 ? 'spiky_cat' : 'boar_frog');
         enemies.push({ x: lx + 86 + k * 50, kind: mk, shielded: k === 0, windupTimer: 0.76, chargePrep: prepTime, shotDone: false, hit: false, phase: k });
       }
-      spawnAerialDronePair(lx + 85, 2);
+      spawnAerialDronePair(lx + 75, 3, grad.tier);
       nextSpawnX += gapStep;
     }
   }
@@ -4485,7 +5214,10 @@ async function autoUploadLeaderboardIfBest() {
 async function fetchAndRenderLeaderboard() {
   if (!rankListBox) return;
   rankListBox.innerHTML = '<div class="rank-empty">⏳ 正在同步全服排行榜...</div>';
-  const myBest = Math.max(store.save.bestSingleRun || 0, runStats.singleRunDist || 0);
+  const liveRunBest = (state !== 'HUB' && getActiveAccountOwnerTag() === activeRunOwner && !(partyCtrl && partyCtrl.isActive()))
+    ? (runStats.singleRunDist || 0)
+    : 0;
+  const myBest = Math.max(store.save.bestSingleRun || 0, liveRunBest);
   try {
     const resp = await fetch(`/api/leaderboard?key=${encodeURIComponent(getCurrentPlayerLbKey())}&t=${Date.now()}`);
     const data = await resp.json();
@@ -4555,7 +5287,10 @@ if (rankOverlay) {
 if (rankSubmitBtn) {
   rankSubmitBtn.addEventListener('click', async () => {
     ensureAudio();
-    const best = Math.max(store.save.bestSingleRun || 0, runStats.singleRunDist || 0);
+    const liveRunBest = (state !== 'HUB' && getActiveAccountOwnerTag() === activeRunOwner && !(partyCtrl && partyCtrl.isActive()))
+      ? (runStats.singleRunDist || 0)
+      : 0;
+    const best = Math.max(store.save.bestSingleRun || 0, liveRunBest);
     if (best < 5) {
       showToast('🏃 先跑出至少 5m 单命距离再来上榜吧！');
       return;
@@ -5044,7 +5779,8 @@ function fireNailoongFlamePulse(dtSlice) {
     player.flameHolding = false;
     player.flameBurstTimer = 0;
   }
-  if (!player.onGround && player.vy > -85) {
+  const flameCeilingY = (superBonusTimer > 0 ? -360 : getBaseSurfaceY(player.x)) - 215;
+  if (!player.onGround && player.vy > -85 && player.y > flameCeilingY) {
     player.vy = Math.max(-145, player.vy - 1750 * dtSlice);
   }
   const rearBoss = Boolean(activeBoss && superBonusTimer <= 0 && activeBoss.worldX < player.x);
@@ -5303,6 +6039,8 @@ window.addEventListener('keydown', (e) => {
     || (propShopOverlay && !propShopOverlay.classList.contains('hidden'))
     || (shareOverlay && !shareOverlay.classList.contains('hidden'))
     || (rechargeOverlay && !rechargeOverlay.classList.contains('hidden'))
+    || (tutorialMenuOverlay && !tutorialMenuOverlay.classList.contains('hidden'))
+    || (acctStrongNudgeOverlay && !acctStrongNudgeOverlay.classList.contains('hidden'))
     || (tutorialWelcomeOverlay && !tutorialWelcomeOverlay.classList.contains('hidden'))
     || (tutorialGradOverlay && !tutorialGradOverlay.classList.contains('hidden'))
     || (pvpTutorialGradOverlay && !pvpTutorialGradOverlay.classList.contains('hidden'))
@@ -5316,6 +6054,9 @@ window.addEventListener('keydown', (e) => {
       closePropShopModal();
       closeCleanShareModal();
       closeRechargeModal();
+      closeTutorialMenuModal();
+      if (acctStrongNudgeOverlay) acctStrongNudgeOverlay.classList.add('hidden');
+      if (acctTutState.active) stopAccountSaveTutorial();
       if (tutorialWelcomeOverlay && !tutorialWelcomeOverlay.classList.contains('hidden')) {
         try { localStorage.setItem(TUT_DONE_KEY, '1'); } catch (_) {}
         tutorialWelcomeOverlay.classList.add('hidden');
@@ -5365,6 +6106,18 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (state !== 'PLAYING') return;
+  if (tutorialSession.active && tutorialSession.mode === 'pvp' && tutorialSession.masteryReady) {
+    if (e.code === 'Enter') {
+      e.preventDefault();
+      advanceCurrentPvpTutorialLesson();
+      return;
+    }
+    if (e.code === 'KeyR') {
+      e.preventDefault();
+      replayCurrentPvpTutorialLesson();
+      return;
+    }
+  }
   if (partyCtrl && partyCtrl.isActive()) {
     if (e.code === 'Digit1' || e.code === 'KeyQ') {
       e.preventDefault();
@@ -5944,8 +6697,9 @@ function update(realDt) {
 
   autoSaveTimer -= realDt;
   if (autoSaveTimer <= 0) {
-    autoSaveTimer = 8.0; // Throttled save prevents synchronous localStorage main-thread stalls!
+    autoSaveTimer = 3.5; // Throttled save + live snapshot so page refresh never loses run progress!
     bankRunProgress(false);
+    saveLivePveRunSnapshot();
   }
 
   if (quickDashWindowTimer > 0) {
@@ -6092,8 +6846,7 @@ function update(realDt) {
       player.hyperReleaseGrace -= realDt;
     }
     const curE = Math.min(30, Math.max(0, Number(store.save.dashEnergy) || 0));
-    const hyperCoveredM = Math.max(0, runStats.dist - (player.hyperStartDist ?? runStats.dist));
-    if (player.hyperReleaseGrace <= 0 || curE <= 0.02 || player.hyperSessionSec >= 10.0 || hyperCoveredM >= 1200) {
+    if (player.hyperReleaseGrace <= 0 || curE <= 0.02 || player.hyperSessionSec >= 10.0) {
       forceStopHyperDash();
     } else {
       store.save.dashEnergy = Math.max(0, curE - realDt);
@@ -6113,27 +6866,27 @@ function update(realDt) {
         }, 10);
       }
 
-      // Bridge nearby pits & smash everything in path!
+      // Bridge nearby pits & smash everything in path (wide sweep for 5.0x Hyper Dash speed!)
       for (let i = 0; i < pits.length; i++) {
-        if (!pits[i].bridged && Math.abs(pits[i].x - player.x) < 280) pits[i].bridged = true;
+        if (!pits[i].bridged && Math.abs(pits[i].x - player.x) < 380) pits[i].bridged = true;
       }
-      checkEnvironmentImpactArea(player.x + 85, player.y - 48, 130);
+      checkEnvironmentImpactArea(player.x + 115, player.y - 48, 175);
       for (let i = 0; i < enemies.length; i++) {
-        if (!enemies[i].hit && Math.abs(enemies[i].x - player.x) < 160) {
+        if (!enemies[i].hit && Math.abs(enemies[i].x - player.x) < 265) {
           enemies[i].shielded = false; defeatEnemy(enemies[i]);
         }
       }
       for (let i = 0; i < snowballs.length; i++) {
-        if (!snowballs[i].smashed && Math.abs(snowballs[i].x - player.x) < 150) snowballs[i].smashed = true;
+        if (!snowballs[i].smashed && Math.abs(snowballs[i].x - player.x) < 250) snowballs[i].smashed = true;
       }
       for (let i = 0; i < cashTrucks.length; i++) {
-        if (!cashTrucks[i].dead && Math.abs(cashTrucks[i].x - player.x) < 150) hitCashTruck(cashTrucks[i], 10);
+        if (!cashTrucks[i].dead && Math.abs(cashTrucks[i].x - player.x) < 250) hitCashTruck(cashTrucks[i], 10);
       }
       for (let i = 0; i < enemyShots.length; i++) {
-        if (!enemyShots[i].dead && Math.abs(enemyShots[i].x - player.x) < 165) enemyShots[i].dead = true;
+        if (!enemyShots[i].dead && Math.abs(enemyShots[i].x - player.x) < 265) enemyShots[i].dead = true;
       }
       for (let i = 0; i < laserGates.length; i++) {
-        if (!laserGates[i].hacked && Math.abs(laserGates[i].x - player.x) < 165) { laserGates[i].hacked = true; laserGates[i].passed = true; }
+        if (!laserGates[i].hacked && Math.abs(laserGates[i].x - player.x) < 265) { laserGates[i].hacked = true; laserGates[i].passed = true; }
       }
 
       // Against Boss: Drive Boss directly into Steel Containment Wall in front of bike (ZERO player.x teleport!)
@@ -6222,16 +6975,40 @@ function update(realDt) {
     player.mortarTimer -= realDt;
     player.mortarShotTick -= realDt;
     if (player.mortarShotTick <= 0) {
-      player.mortarShotTick = 0.62;
-      playSfx('slash');
+      player.mortarShotTick = 0.32;
+      playSfx('crater');
       const mBack = Boolean(activeBoss && superBonusTimer <= 0 && activeBoss.worldX < player.x);
-      projectiles.push({
-        kind: 'shark_bomb',
-        x: player.x - 28, y: player.y - 78,
-        vx: player.vx + (mBack ? (-460 - Math.random() * 80) : (560 + Math.random() * 110)),
-        vy: -310 - Math.random() * 45,
-        r: 20, rot: 0, life: 2.0
-      });
+      // Twin-shell smart-targeting carpet-bomb salvo!
+      for (let salvoIdx = 0; salvoIdx < 2; salvoIdx++) {
+        let aimX = player.x + (mBack ? (-230 - salvoIdx * 170) : (250 + salvoIdx * 230));
+        if (activeBoss && superBonusTimer <= 0 && salvoIdx === 0) {
+          aimX = activeBoss.worldX;
+        } else {
+          for (let ei = 0; ei < enemies.length; ei++) {
+            const en = enemies[ei];
+            if (!en.hit && en.x > player.x + 80 + salvoIdx * 160 && en.x < player.x + 760) {
+              aimX = en.x;
+              break;
+            }
+          }
+        }
+        const flightT = 0.48 + salvoIdx * 0.12;
+        const launchX = player.x - 24;
+        const launchY = player.y - 84;
+        const landY = (superBonusTimer > 0 ? -220 : getBaseSurfaceY(aimX)) - 18;
+        const reqVx = (aimX + player.vx * flightT * 0.42 - launchX) / flightT;
+        const reqVy = (landY - launchY - 0.5 * 1050 * flightT * flightT) / flightT;
+        projectiles.push({
+          kind: 'mortar_shell',
+          x: launchX,
+          y: launchY,
+          vx: Math.max(player.vx - 720, Math.min(player.vx + 980, reqVx)),
+          vy: Math.max(-540, Math.min(-210, reqVy)),
+          r: 25,
+          rot: 0,
+          life: 2.2
+        });
+      }
     }
     if (player.mortarTimer <= 0) {
       player.mortarTimer = 0;
@@ -6424,14 +7201,18 @@ function update(realDt) {
     desiredVx = Math.max(60, Math.round(curNormalVx * surfaceMult * smallBoost * partyCtrl.getSpeedMultiplier() + ropeDelta));
   } else if (headStartTargetDist > 0) desiredVx = Math.round(curNormalVx * 3.15);
   else if (player.hyperDashActive) {
-    // Anchored directly to current normal speed — distinctly faster even when pinning a Boss!
-    desiredVx = Math.round(curNormalVx * (activeBoss && activeBoss.pinnedByHyper ? 1.78 : 2.35));
+    // PvE-Only: Exact 5.0x of current normal speed during Hyper Dash (2.15x when pinning Boss)!
+    desiredVx = Math.round(curNormalVx * (activeBoss && activeBoss.pinnedByHyper ? 2.15 : 5.0));
   }
-  else if (player.rocketDashTimer > 0) desiredVx = Math.round(curNormalVx * 2.15);
+  else if (player.rocketDashTimer > 0) {
+    // PvE-Only: Exact 2.0x of current normal speed during in-run Nitro Prop Dash!
+    desiredVx = Math.round(curNormalVx * 2.0);
+  }
   else if (superBonusTimer > 0) desiredVx = Math.round(curNormalVx * 1.42);
   else if (player.boostTimer > 0 || player.giantTimer > 0 || player.skyWingsTimer > 0 || onIce) desiredVx *= onIce ? 1.22 : 1.18;
   else if (inMud) desiredVx *= 0.75;
-  player.vx += (desiredVx - player.vx) * Math.min(1, dt * (isPartyMode ? 24 : 8));
+  const vxLerpRate = (isPartyMode || player.hyperDashActive || player.rocketDashTimer > 0 || headStartTargetDist > 0) ? 24 : 10;
+  player.vx += (desiredVx - player.vx) * Math.min(1, dt * vxLerpRate);
 
   const isPartyKunFlight = isPartyMode && partyCtrl.isPureKunRocket && partyCtrl.isPureKunRocket();
   if (headStartTargetDist > 0) {
@@ -6570,7 +7351,8 @@ function update(realDt) {
           player.y = tState.baseY; player.vy = -560;
         } else if (isPartyMode) {
           if (!partyCtrl.tryConsumeOneHitShield(true)) {
-            partyCtrl.triggerPartyPlayerKO(true);
+            if (partyCtrl.triggerPelicanRescue) partyCtrl.triggerPelicanRescue(true);
+            else partyCtrl.triggerPartyPlayerKO(true);
           }
         } else {
           player.x += 55;
@@ -6606,6 +7388,46 @@ function update(realDt) {
       player.y = gY;
       player.coyoteTimer = 0.14;
       player.angle += (gSlope - player.angle) * Math.min(1, dt * 14);
+    }
+  }
+
+  // Anti-Air-Camping Sky Interceptor (PvE only): prolonged passive sky-hovering summons active high-altitude threats!
+  if (!isPartyMode && !tutorialSession.active && superBonusTimer <= 0 && headStartTargetDist <= 0 && !player.hyperDashActive && player.rocketDashTimer <= 0) {
+    const airAlt = getBaseSurfaceY(player.x) - player.y;
+    if (!player.onGround && !player.onRail && airAlt > 92) {
+      player.airCampSec = (player.airCampSec || 0) + dt;
+      if (player.airCampSec >= 1.80) {
+        player.airCampSec = 0.25;
+        const ix = player.x + 690;
+        const targetH = Math.max(125, Math.min(248, Math.round(airAlt)));
+        if (Math.random() < 0.55) {
+          enemyShots.push({
+            kind: 'hover_saw',
+            x: ix,
+            y: getBaseSurfaceY(ix) - targetH,
+            hOff: targetH,
+            baseHOff: targetH,
+            oscAmp: 28,
+            phase: Math.random() * 6,
+            vx: -(205 + grad.tier * 36),
+            parried: false,
+            rot: 0
+          });
+        } else {
+          enemies.push({
+            x: ix,
+            kind: 'drone',
+            isSkyShooter: true,
+            shotDone: false,
+            windupTimer: 0.34,
+            flyH: targetH,
+            hit: false,
+            phase: Math.random() * 6
+          });
+        }
+      }
+    } else {
+      player.airCampSec = 0;
     }
   }
 
@@ -6833,6 +7655,64 @@ function update(realDt) {
       pr.x += pr.vx * dt; pr.y = getBaseSurfaceY(pr.x) - pr.r; pr.rot += 20 * dt; pr.life -= dt;
       checkEnvironmentImpactArea(pr.x, pr.y, pr.r + 26);
       for (let j = 0; j < enemies.length; j++) if (!enemies[j].hit && !enemies[j].swallowing && Math.abs(pr.x - enemies[j].x) < pr.r + 32) { enemies[j].shielded = false; defeatEnemy(enemies[j]); }
+    } else if (pr.kind === 'mortar_shell') {
+      pr.vy += 1050 * dt; pr.x += pr.vx * dt; pr.y += pr.vy * dt; pr.rot += 14 * dt; pr.life -= dt;
+      const gy = (superBonusTimer > 0 ? -220 : getBaseSurfaceY(pr.x)) - 12;
+      let hitSomething = pr.y >= gy;
+      if (!hitSomething) {
+        for (let j = 0; j < enemies.length; j++) {
+          if (!enemies[j].hit && !enemies[j].swallowing && Math.hypot(pr.x - enemies[j].x, pr.y - (getEnemyWorldY(enemies[j]) - 24)) < pr.r + 42) {
+            hitSomething = true; break;
+          }
+        }
+      }
+      if (!hitSomething) {
+        for (let j = 0; j < cashTrucks.length; j++) {
+          if (!cashTrucks[j].dead && Math.hypot(pr.x - cashTrucks[j].x, pr.y - (cashTrucks[j].y - 24)) < 68) {
+            hitSomething = true; break;
+          }
+        }
+      }
+      if (!hitSomething && activeBoss && superBonusTimer <= 0) {
+        if (Math.hypot(pr.x - activeBoss.worldX, pr.y - (getBaseSurfaceY(activeBoss.worldX) - 54 + activeBoss.yOff)) < pr.r + 74) {
+          hitSomething = true;
+        }
+      }
+      if (hitSomething && pr.life > 0) {
+        const ex = pr.x, ey = Math.min(pr.y, gy);
+        pr.life = 0;
+        playSfx('crater');
+        shakeTime = Math.max(shakeTime, 0.14);
+        shakeMag = Math.max(shakeMag, 8);
+        pushCapped(roadScars, { x: ex, y: getBaseSurfaceY(ex), r: 52 }, 10);
+        pushCapped(shockwaves, { x: ex, y: ey, r: 18, maxR: 285, life: 0.32, color: '#f97316', harmless: false }, 12);
+        for (let p = 0; p < 5; p++) {
+          const a = (p / 5) * Math.PI * 2;
+          pushCapped(flamePuffs, { x: ex, y: ey - 6, vx: Math.cos(a) * 145, vy: Math.sin(a) * 120 - 55, r: 15, life: 0.30, maxLife: 0.30 }, 36);
+        }
+        checkEnvironmentImpactArea(ex, ey, 250);
+        for (let j = 0; j < enemies.length; j++) {
+          if (!enemies[j].hit && !enemies[j].swallowing && Math.hypot(enemies[j].x - ex, (getEnemyWorldY(enemies[j]) - 24) - ey) < 285) {
+            enemies[j].shielded = false; defeatEnemy(enemies[j]);
+          }
+        }
+        for (let j = 0; j < enemyShots.length; j++) {
+          if (!enemyShots[j].dead && Math.hypot(enemyShots[j].x - ex, enemyShots[j].y - ey) < 260) enemyShots[j].dead = true;
+        }
+        for (let j = 0; j < snowballs.length; j++) {
+          if (!snowballs[j].smashed && Math.hypot(snowballs[j].x - ex, snowballs[j].y - ey) < 260) snowballs[j].smashed = true;
+        }
+        for (let j = 0; j < cashTrucks.length; j++) {
+          if (!cashTrucks[j].dead && Math.abs(cashTrucks[j].x - ex) < 245) hitCashTruck(cashTrucks[j], 4);
+        }
+        if (activeBoss && superBonusTimer <= 0) {
+          const bossDist = Math.hypot(ex - activeBoss.worldX, ey - (getBaseSurfaceY(activeBoss.worldX) - 54 + activeBoss.yOff));
+          if (bossDist < 285) {
+            handlePlayerBossInteraction(activeBoss, getBossCallbacks(), 'projectile');
+            hitBoss(bossDist < 105 ? 56.0 : 36.0, true, false, true);
+          }
+        }
+      }
     } else {
       pr.vy += 1050 * dt; pr.x += pr.vx * dt; pr.y += pr.vy * dt; pr.rot += 12 * dt; pr.life -= dt;
       checkEnvironmentImpactArea(pr.x, pr.y, pr.r + 28);
@@ -6906,10 +7786,10 @@ function update(realDt) {
       threatMult: grad.dmgMult
     }, dt);
 
-    if (hasBossImmediateParryCue(activeBoss, player)) parryGlow = true;
-    if (hasBossImmediateJumpCue(activeBoss, player)) jumpGlow = true;
+    if (activeBoss && hasBossImmediateParryCue(activeBoss, player)) parryGlow = true;
+    if (activeBoss && hasBossImmediateJumpCue(activeBoss, player)) jumpGlow = true;
 
-    if (isPartyMode) {
+    if (isPartyMode && activeBoss) {
       if (partyCtrl.isKunRocketActive() && Math.abs(activeBoss.worldX - player.x) < 150) {
         hitBoss(75 * dt, false, false, true);
       }
@@ -6924,15 +7804,34 @@ function update(realDt) {
     }
   }
 
-  // Road Enemy & Shot Updates (Aggression & Shot Speed Scale Purely by Distance Tier!)
+  // Road & Sky Enemy + Shot Updates (Aggression & Shot Speed Scale Purely by Distance Tier!)
   if (superBonusTimer <= 0) {
     for (let i = 0; i < enemies.length; i++) {
       const en = enemies[i];
       if (en.hit || en.swallowing || en.isTutStep1) continue;
       const distAhead = en.x - player.x;
-      if (en.kind === 'drone' && grad.tier >= 2 && distAhead < 680 && distAhead > -80) {
+      if (en.kind === 'drone' && distAhead < 720 && distAhead > -80) {
         if (en.baseFlyH === undefined) en.baseFlyH = en.flyH || 112;
-        en.flyH = en.baseFlyH + Math.sin(performance.now() * 0.0055 + (en.phase || 0)) * (12 + grad.tier * 5);
+        if (grad.tier >= 2 || en.isSkyShooter) {
+          en.flyH = en.baseFlyH + Math.sin(performance.now() * 0.0055 + (en.phase || 0)) * (14 + grad.tier * 5);
+        }
+        if (en.isSkyShooter && !en.shotDone && distAhead < 620 && distAhead > 185) {
+          en.windupTimer = (en.windupTimer ?? 0.42) - dt;
+          if (en.windupTimer <= 0) {
+            en.shotDone = true;
+            const ey = getEnemyWorldY(en);
+            const playerAlt = Math.max(44, Math.min(245, Math.round(getBaseSurfaceY(player.x) - (player.y - 42))));
+            enemyShots.push({
+              kind: 'lawyer_orb',
+              x: en.x - 20,
+              y: ey - 22,
+              targetH: playerAlt,
+              vx: -(165 + grad.tier * 36),
+              parried: false,
+              rot: 0
+            });
+          }
+        }
       }
       if ((en.kind === 'boar_frog' || en.summonedByBoss) && distAhead < 510 && distAhead > -40) {
         if ((en.chargePrep ?? 0.48) > 0) en.chargePrep -= dt;
@@ -6967,15 +7866,18 @@ function update(realDt) {
           }
         }
       } else if (sh.kind === 'hover_saw') {
-        if (sh.x - player.x < 940) sh.x += sh.vx * dt;
-        sh.y = getBaseSurfaceY(sh.x) - (sh.hOff || 98);
+        if (sh.x - player.x < 1050) sh.x += sh.vx * dt;
+        const curHOff = sh.oscAmp
+          ? (sh.baseHOff || sh.hOff || 98) + Math.sin(performance.now() * 0.0052 + (sh.phase || 0)) * sh.oscAmp
+          : (sh.hOff || 98);
+        sh.y = getBaseSurfaceY(sh.x) - curHOff;
         sh.rot -= 15 * dt;
         if (Math.hypot(sh.x - player.x, sh.y - (player.y - 40)) < 33) {
           sh.dead = true;
           if (player.giantTimer <= 0) {
             takePlayerDamage(16, false, {
-              cause: '🪚 低空悬浮电锯',
-              tip: '悬浮电锯在半空飞行，保持地面骑行从下方穿过，或按【铁山靠】击毁！'
+              cause: '⚙️ 空中巡航电锯',
+              tip: '空中电锯上下巡航封锁航线，可切换高低身位规避，或按【铁山靠】直接击毁！'
             });
           }
         }
@@ -7123,8 +8025,11 @@ function update(realDt) {
   for (let i = 0; i < popups.length; i++) { popups[i].x += player.vx * 0.88 * realDt; popups[i].y += popups[i].vy * realDt; popups[i].life -= realDt; }
   compactInPlace(popups, (p) => p.life > 0);
 
-  // Zero-allocation in-place world cleanup!
-  const cut = isPartyMode ? (cam.camX - 1000) : (cam.camX - 280);
+  // Zero-allocation in-place world cleanup (preserves rival surroundings during Spectator Mode)!
+  const rivalWX = (isPartyMode && partyCtrl.getRivalWorldX) ? partyCtrl.getRivalWorldX() : Infinity;
+  const cut = isPartyMode
+    ? (Math.min(cam.camX, Number.isFinite(rivalWX) ? rivalWX : cam.camX) - 1000)
+    : (cam.camX - 280);
   compactInPlace(pits, (p) => p.x + p.len > cut);
   compactInPlace(mudZones, (m) => m.x + m.len > cut);
   compactInPlace(iceZones, (iz) => iz.x + iz.len > cut);
@@ -7418,8 +8323,15 @@ function render() {
           ctx.beginPath(); ctx.ellipse(en.x, ey - 3, 28, 8, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
         }
         if (en.kind === 'spiky_cat') {
+          if (en.flyH) {
+            ctx.fillStyle = 'rgba(249, 115, 22, 0.82)';
+            ctx.beginPath(); ctx.ellipse(en.x, ey + 2, 14, 7 + Math.sin(performance.now() * 0.04) * 3, 0, 0, Math.PI * 2); ctx.fill();
+          }
           ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 3.5;
           ctx.beginPath(); ctx.arc(en.x, ey - 28 - hop, 31, Math.PI, 0); ctx.stroke();
+        } else if (en.isSkyShooter) {
+          ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2.8;
+          ctx.beginPath(); ctx.arc(en.x, ey - 26, 30, 0, Math.PI * 2); ctx.stroke();
         }
         ctx.restore();
         drawModel(getEnemySpriteKey(en.kind), en.x, ey - 28 - hop);
@@ -7517,6 +8429,14 @@ function render() {
     } else if (pr.kind === 'ikun_pinball') {
       drawSpaldingWheelOn(ctx, pr.x, pr.y, pr.r, pr.rot);
     } else if (pr.kind === 'riot_saw') drawModel('riotSaw', pr.x, pr.y, pr.rot);
+    else if (pr.kind === 'mortar_shell') {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(251, 146, 60, 0.85)';
+      ctx.lineWidth = 3.5;
+      ctx.beginPath(); ctx.arc(pr.x, pr.y, 24, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+      drawModel('sharkBomb', pr.x, pr.y, Math.atan2(pr.vy, 420) * 0.45, 1.28);
+    }
     else if (pr.kind === 'shark_bomb') drawModel('sharkBomb', pr.x, pr.y, Math.atan2(pr.vy, 420) * 0.45);
     else if (pr.kind === 'mini_maodie') drawModel('mini_maodie', pr.x, pr.y, pr.rot * 0.35, 0.96);
     else if (pr.kind === 'bowling_mob') drawModel(getEnemySpriteKey(pr.mobKind), pr.x, pr.y, pr.rot);
@@ -7997,6 +8917,8 @@ partyCtrl = createPartyController({
   startPartyRunSetup,
   returnToHubFromParty,
   startPvpTutorialFromParty: () => startPvpTutorialRun(),
+  finishPvpTutorialFromSpectator: () => openPvpTutorialGraduationModal(),
+  logFinishedRun,
   tryConsumePartyTutorialInput: (kind) => tryConsumeTutorialInput(kind),
   getWorldArrays: () => ({
     pits,
@@ -8068,11 +8990,10 @@ function flushBeforeUnload() {
   if (tutorialSession.active && tutorialSession.savedDashEnergy !== undefined) {
     store.save.dashEnergy = tutorialSession.savedDashEnergy;
   }
+  saveLivePveRunSnapshot();
   bankRunProgress(false);
   store.flushBeacon();
-  if (partyCtrl && partyCtrl.flushLeaveBeacon) {
-    partyCtrl.flushLeaveBeacon();
-  }
+  // NOTE: Intentionally DO NOT forfeit/leave PvP room on beforeunload so F5 refresh or mobile reload seamlessly reconnects!
 }
 window.addEventListener('beforeunload', flushBeforeUnload);
 window.addEventListener('pagehide', flushBeforeUnload);
@@ -8080,16 +9001,6 @@ window.addEventListener('pagehide', flushBeforeUnload);
 // Boot
 store.pullSessionOnBoot();
 try {
-  if (!localStorage.getItem('pelican_fix_teleport_v45')) {
-    localStorage.setItem('pelican_fix_teleport_v45', '1');
-    if ((store.save.selectedCheckpoint || 0) > 10000 || (store.save.maxCheckpoint || 0) > 15000) {
-      store.save.selectedCheckpoint = 0;
-      if ((store.save.maxCheckpoint || 0) > 15000) store.save.maxCheckpoint = 1500;
-      if ((store.save.bestDist || 0) > 15000) store.save.bestDist = Math.min(store.save.bestDist, 2000);
-      if ((store.save.bestSingleRun || 0) > 15000) store.save.bestSingleRun = 0;
-      store.markMutatedAndSave(false);
-    }
-  }
   // One-time starter gift: grant 1 free 超级霸王究极冲刺 (10.0s = 1.0/3) to existing guest local saves!
   if (!localStorage.getItem('pelican_starter_bawang_v1')) {
     localStorage.setItem('pelican_starter_bawang_v1', '1');
@@ -8103,7 +9014,124 @@ refreshHubUI();
 
 if (hubTutorialBtn) {
   hubTutorialBtn.addEventListener('click', () => {
+    openTutorialMenuModal();
+  });
+}
+if (tutMenuCloseBtn) {
+  tutMenuCloseBtn.addEventListener('click', () => {
+    ensureAudio();
+    playSfx('bean');
+    closeTutorialMenuModal();
+  });
+}
+if (tutorialMenuOverlay) {
+  tutorialMenuOverlay.addEventListener('click', (e) => {
+    if (e.target === tutorialMenuOverlay) closeTutorialMenuModal();
+  });
+}
+if (tutMenuPveBtn) {
+  tutMenuPveBtn.addEventListener('click', () => {
     startTutorialRun();
+  });
+}
+if (tutMenuPvpBtn) {
+  tutMenuPvpBtn.addEventListener('click', () => {
+    startPvpTutorialRun();
+  });
+}
+if (tutMenuAcctBtn) {
+  tutMenuAcctBtn.addEventListener('click', () => {
+    startAccountSaveTutorial();
+  });
+}
+if (tutReplayStepBtn) {
+  tutReplayStepBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    replayCurrentPvpTutorialLesson();
+  });
+}
+if (tutNextStepBtn) {
+  tutNextStepBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    advanceCurrentPvpTutorialLesson();
+  });
+}
+if (tutWelcomeOpenMenuBtn) {
+  tutWelcomeOpenMenuBtn.addEventListener('click', () => {
+    openTutorialMenuModal();
+  });
+}
+if (tutGradOpenMenuBtn) {
+  tutGradOpenMenuBtn.addEventListener('click', () => {
+    openTutorialMenuModal();
+  });
+}
+if (pvpTutGradOpenMenuBtn) {
+  pvpTutGradOpenMenuBtn.addEventListener('click', () => {
+    if (partyCtrl && partyCtrl.isActive()) partyCtrl.exitPartyToHub();
+    openTutorialMenuModal();
+  });
+}
+if (guestBindGuideBtn) {
+  guestBindGuideBtn.addEventListener('click', () => {
+    startAccountSaveTutorial();
+  });
+}
+if (acctNudgeStartBtn) {
+  acctNudgeStartBtn.addEventListener('click', () => {
+    startAccountSaveTutorial();
+  });
+}
+if (acctNudgeLaterBtn) {
+  acctNudgeLaterBtn.addEventListener('click', () => {
+    ensureAudio();
+    playSfx('bean');
+    if (acctStrongNudgeOverlay) acctStrongNudgeOverlay.classList.add('hidden');
+  });
+}
+if (acctTutCloseBtn) {
+  acctTutCloseBtn.addEventListener('click', () => {
+    ensureAudio();
+    playSfx('bean');
+    stopAccountSaveTutorial();
+  });
+}
+if (acctTutSubBtn) {
+  acctTutSubBtn.addEventListener('click', () => {
+    ensureAudio();
+    playSfx('bean');
+    if (acctTutState.step === 2) {
+      renderAccountTutorialStep(3);
+    } else if (acctTutState.step === 4) {
+      stopAccountSaveTutorial();
+      openTutorialMenuModal();
+    }
+  });
+}
+if (acctTutPrimaryBtn) {
+  acctTutPrimaryBtn.addEventListener('click', () => {
+    ensureAudio();
+    playSfx('bean');
+    if (acctTutState.step === 1) {
+      renderAccountTutorialStep(2);
+    } else if (acctTutState.step === 2) {
+      const isLogged = Boolean(store.auth && store.auth.token && store.auth.username);
+      if (!isLogged && authUserInp && authPassInp && authUserInp.value.trim().length >= 2 && authPassInp.value.length >= 4 && authRegisterBtn) {
+        authRegisterBtn.click();
+      } else {
+        renderAccountTutorialStep(3);
+      }
+    } else if (acctTutState.step === 3) {
+      renderAccountTutorialStep(4);
+    } else {
+      stopAccountSaveTutorial();
+    }
+  });
+}
+if (pvpHubQuickMatchBtn) {
+  pvpHubQuickMatchBtn.addEventListener('click', () => {
+    ensureAudio();
+    if (partyCtrl && partyCtrl.openAndQuickMatch) partyCtrl.openAndQuickMatch();
   });
 }
 if (pvpHubTutorialBtn) {
@@ -8177,31 +9205,48 @@ if (tutGradHubBtn) {
   });
 }
 
-// Auto-join PvP room if URL has ?room=XXXX; otherwise show 30s Hands-On Tutorial prompt for brand-new players!
+// Auto-reconnect PvP room (`?room=XXXX` or F5 mid-race reload) -> or auto-resume PvE mid-run reload -> or show fresh welcome!
 (async () => {
   let handledRoomLink = false;
   if (partyCtrl && partyCtrl.checkUrlRoomAutoJoin) {
     handledRoomLink = await partyCtrl.checkUrlRoomAutoJoin();
   }
   if (!handledRoomLink) {
-    try {
-      const tutDone = Boolean(localStorage.getItem(TUT_DONE_KEY));
-      const isFreshPlayer = (store.save.bestSingleRun || 0) < 30;
-      if (!tutDone && isFreshPlayer && tutorialWelcomeOverlay) {
-        tutorialWelcomeOverlay.classList.remove('hidden');
-      }
-    } catch (_) {}
+    const restoredPve = tryRestoreLivePveRunSnapshot();
+    if (!restoredPve) {
+      try {
+        const tutDone = Boolean(localStorage.getItem(TUT_DONE_KEY));
+        const isFreshPlayer = (store.save.bestSingleRun || 0) < 30;
+        if (!tutDone && isFreshPlayer && tutorialWelcomeOverlay) {
+          tutorialWelcomeOverlay.classList.remove('hidden');
+        }
+      } catch (_) {}
+    }
   }
 })();
 
 let lastTime = performance.now();
 function frame(now) {
-  const dt = Math.min(0.04, (now - lastTime) / 1000);
-  lastTime = now;
-  update(dt);
-  render();
-  renderHubPreview(now);
+  // Schedule NEXT frame FIRST so no unexpected exception can EVER freeze or kill the render loop!
   requestAnimationFrame(frame);
+  const rawDt = (now - lastTime) / 1000;
+  lastTime = now;
+  const dt = Number.isFinite(rawDt) ? Math.max(0, Math.min(0.04, rawDt)) : 0.016;
+  try {
+    update(dt);
+  } catch (err) {
+    console.error('[PelicanUpdateGuard]', err);
+  }
+  try {
+    render();
+  } catch (err) {
+    console.error('[PelicanRenderGuard]', err);
+  }
+  try {
+    renderHubPreview(now);
+  } catch (err) {
+    console.error('[PelicanHubPreviewGuard]', err);
+  }
 }
 requestAnimationFrame(frame);
 

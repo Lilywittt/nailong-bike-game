@@ -9,8 +9,8 @@
 //     telegraphs physically, and can be countered by Jump, 🐔铁山靠, Skills & Props!
 // ============================================================================
 
-import { drawModelOn, drawSpaldingWheelOn } from './models.js?v=8.8';
-import { playSfx, playCriticalMomentVoice } from './audio.js?v=8.8';
+import { drawModelOn, drawSpaldingWheelOn } from './models.js?v=9.0';
+import { playSfx, playCriticalMomentVoice } from './audio.js?v=9.0';
 
 export function initBossCustomState(boss, playerX) {
   boss.mech = 'idle';
@@ -397,6 +397,7 @@ export function handlePlayerBossInteraction(boss, env, triggerType) {
 }
 
 export function updateBossEngine(boss, env, dt) {
+  if (!boss || !Number.isFinite(boss.worldX)) return;
   const {
     player, cam, W, threatMult, getGroundY,
     takeDamage, hitBoss, addPopup, spawnShockwave, spawnBeans, grantShield, spawnRail, spawnPit
@@ -1321,6 +1322,7 @@ function drawBouncingArrow(ctx, x, y, icon = '⬇️', col = '#4ade80', now = 0)
 }
 
 export function renderBossArenaAndModel(ctx, boss, env) {
+  if (!boss || !Number.isFinite(boss.worldX)) return;
   const { player, startWX, endWX, cam, W, H, getGroundY, drawParryRing } = env;
   const now = performance.now();
   const groundBY = getGroundY(boss.worldX);

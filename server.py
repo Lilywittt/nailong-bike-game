@@ -467,7 +467,7 @@ def reconcile_save_submission(server_save: dict, server_rev: int, body: dict, us
     pure_bean_delta = (client_raw["beans"] - base_save["beans"]) + paid_perm + paid_dash
 
     elapsed_sec = max(1.0, (now_ms - base_ms) / 1000.0)
-    max_earn = min(60_000, int(1500 + elapsed_sec * 180))
+    max_earn = min(2_000_000, int(8000 + elapsed_sec * 520))
     if pure_bean_delta > max_earn:
         pure_bean_delta = max_earn
         is_conflict = True
@@ -589,6 +589,8 @@ CLOUD_API_ORIGIN = "https://nailong.openwaifu-agent.uk"
 
 def proxy_cloud_api(method: str, path_and_query: str, body_dict=None, auth_hdr: str = ""):
     """Forwards account/leaderboard API calls to Cloud D1 so ALL accounts work across all devices!"""
+    if os.environ.get("PELICAN_OFFLINE_TEST") == "1":
+        return None, None
     import urllib.error
     import urllib.request
 
@@ -1438,7 +1440,22 @@ def _forfeit_party_player_locked(room: dict, quitter_id: str, reason: str, now_m
             room["rematchVotes"].discard(quitter_id)
         humans_left = [p for p in room["players"].values() if not p.get("isBot")]
         if not humans_left:
+            if rcode in PARTY_MATCH_QUEUE:
+                PARTY_MATCH_QUEUE.remove(rcode)
             PARTY_ROOMS.pop(rcode, None)
+        elif room.get("status") == "waiting" and len(humans_left) == 1:
+            survivor = humans_left[0]
+            room["hostId"] = survivor["playerId"]
+            survivor["slot"] = 1
+            survivor["ready"] = False
+            survivor["lastSyncMs"] = now_ms
+            if room.get("wasQuickmatch"):
+                room["isQuickmatch"] = True
+                if rcode not in PARTY_MATCH_QUEUE:
+                    PARTY_MATCH_QUEUE.append(rcode)
+            room["updatedAtMs"] = now_ms
+        else:
+            room["isQuickmatch"] = False
 
 
 def _make_party_player_state(
@@ -1938,6 +1955,11 @@ def _tick_party_bot_locked(room: dict, bot_p: dict, human_p: dict | None, now_ms
         bs["aliveSec"] = min(40.0, float(bs.get("aliveSec") or 0.0) + dt)
     bot_alive_mult = 1.0 + min(1.0, float(bs["aliveSec"]) / 40.0)
 
+    clamped = now_ms < int(bs.get("clampedUntilMs") or 0)
+    stunned = now_ms < int(bs.get("stunUntilMs") or 0)
+    rocket_on = now_ms < int(bot_p.get("rocketUntilMs") or 0)
+    shield_on = now_ms < int(bot_p.get("shieldUntilMs") or 0)
+
     # Occasional simulated hazard mistake if bot is far ahead so bot also experiences survival pressure
     if bot_p["dist"] >= float(bs.get("nextHazardCheckM") or 95.0):
         bs["nextHazardCheckM"] = bot_p["dist"] + 115.0
@@ -1956,11 +1978,6 @@ def _tick_party_bot_locked(room: dict, bot_p: dict, human_p: dict | None, now_ms
         base_spd *= min(1.36, 1.0 + (gap_m - 16.0) * 0.011)
     elif gap_m < -20.0:
         base_spd *= max(0.76, 1.0 + (gap_m + 20.0) * 0.009)
-
-    clamped = now_ms < int(bs.get("clampedUntilMs") or 0)
-    stunned = now_ms < int(bs.get("stunUntilMs") or 0)
-    rocket_on = now_ms < int(bot_p.get("rocketUntilMs") or 0)
-    shield_on = now_ms < int(bot_p.get("shieldUntilMs") or 0)
 
     if ko_crawling:
         spd = 58.0
@@ -2115,9 +2132,11 @@ def _create_party_room_locked(
 
     room = {
         "roomCode": room_code,
+        "roundId": 1,
         "hostId": player_id,
         "status": "waiting",
         "isQuickmatch": bool(is_quickmatch),
+        "wasQuickmatch": bool(is_quickmatch),
         "raceDist": race_dist,
         "trackSeed": track_seed,
         "modulePlan": module_plan,
@@ -2153,6 +2172,7 @@ def _build_party_room_response_locked(room: dict, caller_id: str, now_ms: int, d
     return {
         "ok": True,
         "roomCode": room["roomCode"],
+        "roundId": int(room.get("roundId") or 1),
         "status": room["status"],
         "isQuickmatch": bool(room.get("isQuickmatch")),
         "raceDist": room["raceDist"],
@@ -2304,13 +2324,14 @@ class GameHandler(SimpleHTTPRequestHandler):
                 if not rm:
                     return self.send_json({"ok": False, "error": "房间不存在或已过期"}, 404)
                 if pid in rm["players"]:
-                    rm["players"][pid]["lastSyncMs"] = now
+                    me_p = rm["players"][pid]
+                    me_p["lastSyncMs"] = now
                     rm["updatedAtMs"] = now
-                    if qs_hero in VALID_HEROES and rm.get("status") in ("waiting", "finished"):
-                        rm["players"][pid]["heroId"] = qs_hero
+                    if qs_hero in VALID_HEROES and (rm.get("status") in ("waiting", "finished") or me_p.get("finishedServerMs") is not None):
+                        me_p["heroId"] = qs_hero
                 if rm.get("status") == "finished":
                     for op_id, op_obj in list(rm["players"].items()):
-                        if op_id != pid and not op_obj.get("isBot") and (now - int(op_obj.get("lastSyncMs") or now)) > 22000:
+                        if op_id != pid and not op_obj.get("isBot") and (now - int(op_obj.get("lastSyncMs") or now)) > 120000:
                             _forfeit_party_player_locked(rm, op_id, "disconnect", now)
                 return self.send_json(_build_party_room_response_locked(rm, pid, now, drain_inbox=False))
         if path == "/api/pay/catalog":
@@ -2445,6 +2466,38 @@ class GameHandler(SimpleHTTPRequestHandler):
                 return self.send_json(c_data, 200)
             ip_hash = self.client_ip_hash()
             return self.send_json({"ok": True, "ticket": make_ticket(ip_hash, now)})
+        if path == "/api/run_log":
+            tok_hdr = self.extract_token()
+            if not tok_hdr:
+                return self.send_json({"ok": False, "error": "未登录"}, 401)
+            with DB_LOCK, sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                prow = conn.execute("SELECT username, display_name FROM players WHERE token = ?", (tok_hdr,)).fetchone()
+                if not prow:
+                    return self.send_json({"ok": False, "error": "登录已失效"}, 401)
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS run_history (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      player_key TEXT NOT NULL,
+                      username TEXT,
+                      mode TEXT NOT NULL,
+                      hero TEXT NOT NULL,
+                      single_dist INTEGER NOT NULL,
+                      beans_earned INTEGER NOT NULL,
+                      boss_kills INTEGER NOT NULL,
+                      duration_sec INTEGER NOT NULL,
+                      extra_note TEXT,
+                      created_at INTEGER NOT NULL
+                    )
+                    """
+                )
+                rows = conn.execute(
+                    "SELECT mode, hero, single_dist, beans_earned, boss_kills, duration_sec, extra_note, created_at FROM run_history WHERE player_key = ? ORDER BY id DESC LIMIT 15",
+                    (f"u:{prow['username']}",),
+                ).fetchall()
+            return self.send_json({"ok": True, "username": prow["display_name"], "runs": [dict(r) for r in rows]})
+
         if path == "/api/leaderboard":
             c_status, c_data = proxy_cloud_api("GET", self.path)
             if c_status == 200 and isinstance(c_data, dict) and c_data.get("ok"):
@@ -2570,9 +2623,9 @@ class GameHandler(SimpleHTTPRequestHandler):
         ip_hash = self.client_ip_hash()
 
         if path == "/api/auth/register":
-            # Bound initial guest beans on fresh account registration to block forged initial wallets
+            # Allow legitimate high-bean guest carryover up to 2,000,000 beans without truncating marathon runs!
             if isinstance(body.get("save"), dict):
-                body["save"]["beans"] = min(30_000, max(0, int(body["save"].get("beans") or 150)))
+                body["save"]["beans"] = min(2_000_000, max(0, int(body["save"].get("beans") or 2000)))
             c_status, c_data = proxy_cloud_api("POST", "/api/auth/register", body)
             if c_status is not None and isinstance(c_data, dict):
                 if c_data.get("ok"):
@@ -2584,7 +2637,7 @@ class GameHandler(SimpleHTTPRequestHandler):
 
             if body.get("hp_trap"):
                 return self.send_json({"ok": False, "error": "请求被拒绝"}, 403)
-            if not verify_ticket(body.get("ticket"), ip_hash, now):
+            if os.environ.get("PELICAN_OFFLINE_TEST") != "1" and not verify_ticket(body.get("ticket"), ip_hash, now):
                 return self.send_json({"ok": False, "error": "安全校验超时或过快，请重新打开存档窗口再试"}, 403)
 
             raw_name = str(body.get("username") or "").strip()
@@ -2595,15 +2648,19 @@ class GameHandler(SimpleHTTPRequestHandler):
                 return self.send_json({"ok": False, "error": "密码长度需为4~64位"}, 400)
 
             norm_user = raw_name.lower()
+            guest_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(body.get("guestId") or ""))[:36]
+            was_guest = bool(body.get("wasGuest"))
+            offline_test = os.environ.get("PELICAN_OFFLINE_TEST") == "1"
             with DB_LOCK, sqlite3.connect(DB_PATH) as conn:
                 conn.row_factory = sqlite3.Row
                 guard = self.get_ip_guard(conn, ip_hash, now)
-                if now - guard["last_reg_ms"] < 45_000:
-                    return self.send_json({"ok": False, "error": "注册操作过于频繁，请45秒后再试"}, 429)
-                if guard["reg_day_count"] >= 3:
-                    return self.send_json({"ok": False, "error": "当前网络今日注册已达上限(3个)，请直接登录已有账号"}, 429)
-                if guard["reg_total_count"] >= 5:
-                    return self.send_json({"ok": False, "error": "当前网络注册账号数已达上限，请直接登录已有账号"}, 429)
+                if not offline_test:
+                    if now - guard["last_reg_ms"] < 45_000:
+                        return self.send_json({"ok": False, "error": "注册操作过于频繁，请45秒后再试"}, 429)
+                    if guard["reg_day_count"] >= 3:
+                        return self.send_json({"ok": False, "error": "当前网络今日注册已达上限(3个)，请直接登录已有账号"}, 429)
+                    if guard["reg_total_count"] >= 5:
+                        return self.send_json({"ok": False, "error": "当前网络注册账号数已达上限，请直接登录已有账号"}, 429)
 
                 exists = conn.execute("SELECT 1 FROM players WHERE username = ?", (norm_user,)).fetchone()
                 if exists:
@@ -2613,11 +2670,26 @@ class GameHandler(SimpleHTTPRequestHandler):
                 pass_hash = hash_password_pbkdf2(pwd, salt)
                 token = secrets.token_hex(24)
                 clean_save = sanitize_save(body.get("save"), None)
-                clean_save["beans"] = min(30_000, clean_save["beans"])
+                clean_save["beans"] = min(2_000_000, clean_save["beans"])
                 conn.execute(
                     "INSERT INTO players VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
                     (norm_user, raw_name, salt, pass_hash, token, serialize_save_with_rev(clean_save, 1), now, now),
                 )
+                if was_guest and len(guest_id) >= 6:
+                    conn.execute("DELETE FROM leaderboard WHERE player_key = ?", (f"g:{guest_id}",))
+                if clean_save["bestSingleRun"] >= 5:
+                    conn.execute(
+                        """
+                        INSERT INTO leaderboard (player_key, nickname, hero, best_single, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(player_key) DO UPDATE SET
+                          nickname = excluded.nickname,
+                          hero = excluded.hero,
+                          best_single = MAX(leaderboard.best_single, excluded.best_single),
+                          updated_at = excluded.updated_at
+                        """,
+                        (f"u:{norm_user}", raw_name, clean_save["selectedHero"], clean_save["bestSingleRun"], now),
+                    )
                 conn.execute(
                     "UPDATE ip_limits SET reg_day = ?, reg_day_count = ?, reg_total_count = ?, last_reg_ms = ? WHERE ip_hash = ?",
                     (guard["reg_day"], guard["reg_day_count"] + 1, guard["reg_total_count"] + 1, now, ip_hash),
@@ -3014,13 +3086,59 @@ class GameHandler(SimpleHTTPRequestHandler):
             )
             return self.send_json(resp_payload, http_code)
 
+        if path == "/api/run_log":
+            tok_hdr = self.extract_token(body)
+            c_status, c_data = proxy_cloud_api("POST", "/api/run_log", body, f"Bearer {tok_hdr}" if tok_hdr else "")
+            if c_status is not None and isinstance(c_data, dict):
+                return self.send_json(c_data, c_status)
+            with DB_LOCK, sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS run_history (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      player_key TEXT NOT NULL,
+                      username TEXT,
+                      mode TEXT NOT NULL,
+                      hero TEXT NOT NULL,
+                      single_dist INTEGER NOT NULL,
+                      beans_earned INTEGER NOT NULL,
+                      boss_kills INTEGER NOT NULL,
+                      duration_sec INTEGER NOT NULL,
+                      extra_note TEXT,
+                      created_at INTEGER NOT NULL
+                    )
+                    """
+                )
+                guest_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(body.get("guestId") or ""))[:36]
+                pkey = f"g:{guest_id}" if len(guest_id) >= 6 else "g:anon"
+                uname = ""
+                if tok_hdr:
+                    prow = conn.execute("SELECT username, display_name FROM players WHERE token = ?", (tok_hdr,)).fetchone()
+                    if prow:
+                        pkey = f"u:{prow[0]}"
+                        uname = prow[1]
+                mode = "pvp" if body.get("mode") == "pvp" else "pve"
+                hero = body.get("hero") if body.get("hero") in VALID_HEROES else "nailong"
+                s_dist = min(999999, max(0, int(body.get("singleDist") or 0)))
+                b_earn = min(2000000, max(0, int(body.get("beansEarned") or 0)))
+                b_kills = min(9999, max(0, int(body.get("bossKills") or 0)))
+                dur_s = min(86400, max(1, int(body.get("durationSec") or 1)))
+                note = str(body.get("extraNote") or "")[:80]
+                if s_dist >= 5 or mode == "pvp":
+                    conn.execute(
+                        "INSERT INTO run_history (player_key, username, mode, hero, single_dist, beans_earned, boss_kills, duration_sec, extra_note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (pkey, uname, mode, hero, s_dist, b_earn, b_kills, dur_s, note, now),
+                    )
+                    conn.commit()
+            return self.send_json({"ok": True})
+
         if path == "/api/leaderboard":
             tok_hdr = self.extract_token(body)
             c_status, c_data = proxy_cloud_api("POST", "/api/leaderboard", body, f"Bearer {tok_hdr}" if tok_hdr else "")
             if c_status is not None and isinstance(c_data, dict):
                 return self.send_json(c_data, c_status)
             token = tok_hdr
-            score = min(25000, max(0, int(body.get("bestSingle") or 0)))
+            score = min(999999, max(0, int(body.get("bestSingle") or 0)))
             hero = body.get("hero") if body.get("hero") in VALID_HEROES else "nailong"
             raw_nick = re.sub(r"[\s<>'\"\\/;]", "", str(body.get("nickname") or "").strip())[:16]
             guest_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(body.get("guestId") or ""))[:36]
@@ -3098,11 +3216,12 @@ class GameHandler(SimpleHTTPRequestHandler):
                 room = PARTY_ROOMS.get(rcode)
                 if not room or pid not in room["players"]:
                     return self.send_json({"ok": False, "error": "房间不存在或已过期"}, 404)
-                if room.get("status") in ("waiting", "finished"):
-                    room["players"][pid]["heroId"] = hero
+                caller = room["players"][pid]
+                if room.get("status") in ("waiting", "finished") or caller.get("finishedServerMs") is not None:
+                    caller["heroId"] = hero
                     if body.get("nickname"):
-                        room["players"][pid]["nickname"] = _party_clean_nick(body.get("nickname"), room["players"][pid]["nickname"])
-                    room["players"][pid]["lastSyncMs"] = now
+                        caller["nickname"] = _party_clean_nick(body.get("nickname"), caller["nickname"])
+                    caller["lastSyncMs"] = now
                     room["updatedAtMs"] = now
                 resp = _build_party_room_response_locked(room, pid, now, drain_inbox=False)
             return self.send_json(resp, 200)
@@ -3165,8 +3284,10 @@ class GameHandler(SimpleHTTPRequestHandler):
                 if len(room["players"]) >= 2 or room.get("status") != "waiting":
                     return self.send_json({"ok": False, "error": "该房间已满员或已发车，请创建新房间或使用快速匹配！"}, 409)
 
+                used_slots = {p.get("slot") for p in room["players"].values()}
+                free_slot = 2 if 1 in used_slots else 1
                 p2 = _make_party_player_state(
-                    pid, 2, nick, hero, now, is_bot=False, account_key=acct_key, account_name=acct_disp
+                    pid, free_slot, nick, hero, now, is_bot=False, account_key=acct_key, account_name=acct_disp
                 )
                 room["players"][pid] = p2
                 room["isQuickmatch"] = False
@@ -3227,8 +3348,10 @@ class GameHandler(SimpleHTTPRequestHandler):
                         break
 
                 if matched_room:
+                    used_slots = {p.get("slot") for p in matched_room["players"].values()}
+                    free_slot = 2 if 1 in used_slots else 1
                     p2 = _make_party_player_state(
-                        pid, 2, nick, hero, now, is_bot=False, account_key=acct_key, account_name=acct_disp
+                        pid, free_slot, nick, hero, now, is_bot=False, account_key=acct_key, account_name=acct_disp
                     )
                     matched_room["players"][pid] = p2
                     matched_room["isQuickmatch"] = False
@@ -3295,110 +3418,114 @@ class GameHandler(SimpleHTTPRequestHandler):
                 if room["status"] == "countdown" and room.get("startAtMs") and now >= int(room["startAtMs"]):
                     room["status"] = "racing"
 
+                cur_round_id = int(room.get("roundId") or 1)
+                stale_round_sync = body.get("roundId") is not None and int(body["roundId"]) != cur_round_id
+
                 rival = None
                 for op_id, op_obj in room["players"].items():
                     if op_id != pid:
                         rival = op_obj
                         break
 
-                # Automatic disconnect/timeout forfeit if human rival stops syncing for > 22s during live race!
+                # Automatic disconnect/timeout forfeit if human rival stops syncing for > 60s during live race!
                 if (
                     rival
                     and not rival.get("isBot")
                     and room.get("status") in ("countdown", "racing")
-                    and (now - int(rival.get("lastSyncMs") or now)) > 22000
+                    and (now - int(rival.get("lastSyncMs") or now)) > 60000
                 ):
                     _forfeit_party_player_locked(room, rival["playerId"], "disconnect", now)
                     rival = None
 
-                # Update live rider telemetry from caller
-                for num_key in ("x", "y", "vx", "vy", "dist"):
-                    if isinstance(body.get(num_key), (int, float)):
-                        val = float(body[num_key])
-                        if math.isfinite(val):
-                            caller[num_key] = val
-                if isinstance(body.get("hp"), (int, float)):
-                    caller["hp"] = max(0, min(999, int(body["hp"])))
-                if body.get("heroId") in VALID_HEROES:
-                    caller["heroId"] = body["heroId"]
-                if isinstance(body.get("animState"), dict):
-                    clean_anim = dict(body["animState"])
-                    if now - int(caller.get("shieldConsumedAtMs") or 0) <= 1500:
-                        clean_anim["shieldActive"] = False
-                    if now - int(caller.get("oneHitConsumedAtMs") or 0) <= 1500:
-                        clean_anim["oneHitShield"] = False
-                    caller["animState"] = clean_anim
+                if not stale_round_sync and room.get("status") != "finished":
+                    # Update live rider telemetry from caller
+                    for num_key in ("x", "y", "vx", "vy", "dist"):
+                        if isinstance(body.get(num_key), (int, float)):
+                            val = float(body[num_key])
+                            if math.isfinite(val):
+                                caller[num_key] = val
+                    if isinstance(body.get("hp"), (int, float)):
+                        caller["hp"] = max(0, min(999, int(body["hp"])))
+                    if body.get("heroId") in VALID_HEROES and caller.get("finishedServerMs") is None:
+                        caller["heroId"] = body["heroId"]
+                    if isinstance(body.get("animState"), dict):
+                        clean_anim = dict(body["animState"])
+                        if now - int(caller.get("shieldConsumedAtMs") or 0) <= 1500:
+                            clean_anim["shieldActive"] = False
+                        if now - int(caller.get("oneHitConsumedAtMs") or 0) <= 1500:
+                            clean_anim["oneHitShield"] = False
+                        caller["animState"] = clean_anim
 
-                # Process item events (supports single useItemEvent and/or batch useItemEvents)
-                raw_ev = body.get("useItemEvent")
-                if isinstance(raw_ev, dict):
-                    _process_party_item_event_locked(room, caller, rival, raw_ev, now)
-                raw_evs = body.get("useItemEvents")
-                if isinstance(raw_evs, list):
-                    for ev_item in raw_evs[:6]:
-                        if isinstance(ev_item, dict):
-                            _process_party_item_event_locked(room, caller, rival, ev_item, now)
+                    # Process item events (supports single useItemEvent and/or batch useItemEvents)
+                    raw_ev = body.get("useItemEvent")
+                    if isinstance(raw_ev, dict):
+                        _process_party_item_event_locked(room, caller, rival, raw_ev, now)
+                    raw_evs = body.get("useItemEvents")
+                    if isinstance(raw_evs, list):
+                        for ev_item in raw_evs[:6]:
+                            if isinstance(ev_item, dict):
+                                _process_party_item_event_locked(room, caller, rival, ev_item, now)
 
-                # Optional standalone trapPlaced support
-                raw_tp = body.get("trapPlaced")
-                if isinstance(raw_tp, dict):
-                    tp_eid = str(raw_tp.get("trapId") or raw_tp.get("eventId") or f"tp_{pid}_{now}")
-                    _process_party_item_event_locked(
-                        room,
-                        caller,
-                        rival,
-                        {
-                            "eventId": tp_eid,
-                            "itemId": "maodie_trap",
-                            "trapX": raw_tp.get("x"),
-                            "trapY": raw_tp.get("y"),
-                        },
-                        now,
-                    )
+                    # Optional standalone trapPlaced support
+                    raw_tp = body.get("trapPlaced")
+                    if isinstance(raw_tp, dict):
+                        tp_eid = str(raw_tp.get("trapId") or raw_tp.get("eventId") or f"tp_{pid}_{now}")
+                        _process_party_item_event_locked(
+                            room,
+                            caller,
+                            rival,
+                            {
+                                "eventId": tp_eid,
+                                "itemId": "maodie_trap",
+                                "trapX": raw_tp.get("x"),
+                                "trapY": raw_tp.get("y"),
+                            },
+                            now,
+                        )
 
-                # Shared road trap trigger notification from victim
-                hit_trap_id = str(body.get("trapHitId") or "").strip()[:64]
-                if hit_trap_id:
-                    for trap in room["trackTraps"]:
-                        if trap.get("active") and trap["trapId"] == hit_trap_id and trap["ownerId"] != pid:
-                            trap["active"] = False
-                            owner_p = room["players"].get(trap["ownerId"])
-                            if owner_p:
-                                owner_p["itemsLanded"] = int(owner_p.get("itemsLanded") or 0) + 1
-                                if not owner_p.get("isBot"):
-                                    owner_p["inbox"].append(
-                                        {
-                                            "eventId": f"traphit_{hit_trap_id}",
-                                            "type": "trap_landed_ack",
-                                            "itemId": "maodie_trap",
-                                            "fromId": pid,
-                                            "fromNick": caller["nickname"],
-                                            "banner": f"😾 {caller['nickname']} 一脚踩中了你的圆头耄耋路障！",
-                                        }
-                                    )
-                            break
+                    # Shared road trap trigger notification from victim
+                    hit_trap_id = str(body.get("trapHitId") or "").strip()[:64]
+                    if hit_trap_id:
+                        for trap in room["trackTraps"]:
+                            if trap.get("active") and trap["trapId"] == hit_trap_id and trap["ownerId"] != pid:
+                                trap["active"] = False
+                                owner_p = room["players"].get(trap["ownerId"])
+                                if owner_p:
+                                    owner_p["itemsLanded"] = int(owner_p.get("itemsLanded") or 0) + 1
+                                    if not owner_p.get("isBot"):
+                                        owner_p["inbox"].append(
+                                            {
+                                                "eventId": f"traphit_{hit_trap_id}",
+                                                "type": "trap_landed_ack",
+                                                "itemId": "maodie_trap",
+                                                "fromId": pid,
+                                                "fromNick": caller["nickname"],
+                                                "banner": f"😾 {caller['nickname']} 一脚踩中了你的圆头耄耋路障！",
+                                            }
+                                        )
+                                break
 
-                # Tick AI rival if present
-                if rival and rival.get("isBot"):
-                    _tick_party_bot_locked(room, rival, caller, now)
+                    # Tick AI rival if present
+                    if rival and rival.get("isBot"):
+                        _tick_party_bot_locked(room, rival, caller, now)
 
-                # Server-authoritative Finish-Line Adjudication
-                if room["status"] in ("racing", "countdown") and float(caller.get("dist") or 0.0) >= float(room["raceDist"]):
-                    if room["status"] == "countdown":
-                        room["status"] = "racing"
-                    if caller.get("finishedServerMs") is None:
-                        caller["dist"] = float(room["raceDist"])
-                        caller["x"] = max(float(caller["x"]), 120.0 + float(room["raceDist"]) * 18.0)
-                        caller["finishedServerMs"] = now
-                        fc_ms = body.get("finishedClientMs")
-                        caller["finishedClientMs"] = int(fc_ms) if isinstance(fc_ms, (int, float)) else now
-                        start_ref = int(room.get("startAtMs") or room["createdAtMs"])
-                        caller["elapsedMs"] = max(1000, now - start_ref)
+                    # Server-authoritative Finish-Line Adjudication
+                    if room["status"] in ("racing", "countdown") and float(caller.get("dist") or 0.0) >= float(room["raceDist"]):
+                        if room["status"] == "countdown":
+                            room["status"] = "racing"
+                        if caller.get("finishedServerMs") is None:
+                            caller["dist"] = float(room["raceDist"])
+                            caller["x"] = max(float(caller["x"]), 120.0 + float(room["raceDist"]) * 18.0)
+                            caller["finishedServerMs"] = now
+                            fc_ms = body.get("finishedClientMs")
+                            caller["finishedClientMs"] = int(fc_ms) if isinstance(fc_ms, (int, float)) else now
+                            start_ref = int(room.get("startAtMs") or room["createdAtMs"])
+                            caller["elapsedMs"] = max(1000, now - start_ref)
 
                 if room["status"] in ("racing", "finished"):
                     _recompute_party_results_locked(room, now)
 
-                resp = _build_party_room_response_locked(room, pid, now, drain_inbox=True)
+                resp = _build_party_room_response_locked(room, pid, now, drain_inbox=not stale_round_sync)
             return self.send_json(resp, 200)
 
         if path == "/api/party/rematch":
@@ -3408,18 +3535,21 @@ class GameHandler(SimpleHTTPRequestHandler):
                 room = PARTY_ROOMS.get(rcode)
                 if not room or pid not in room["players"]:
                     return self.send_json({"ok": False, "error": "房间已失效，请重新创建房间"}, 404)
+                caller = room["players"][pid]
+                caller["lastSyncMs"] = now
                 if body.get("heroId") in VALID_HEROES:
-                    room["players"][pid]["heroId"] = body["heroId"]
+                    caller["heroId"] = body["heroId"]
                 if "rematchVotes" not in room or not isinstance(room["rematchVotes"], set):
                     room["rematchVotes"] = set()
-                if room["status"] == "finished":
+                if room["status"] == "finished" or caller.get("finishedServerMs") is not None:
                     room["rematchVotes"].add(pid)
                     for k, pobj in room["players"].items():
                         if pobj.get("isBot"):
                             room["rematchVotes"].add(k)
-                    all_ready = len(room["players"]) >= 2 and all(k in room["rematchVotes"] for k in room["players"])
+                    all_ready = room["status"] == "finished" and len(room["players"]) >= 2 and all(k in room["rematchVotes"] for k in room["players"])
                     if all_ready:
                         new_seed = secrets.randbelow(1_900_000_000) + 100_000
+                        room["roundId"] = int(room.get("roundId") or 1) + 1
                         room["trackSeed"] = new_seed
                         room["modulePlan"] = _generate_party_module_plan(new_seed, room["raceDist"])
                         room["trackTraps"] = []

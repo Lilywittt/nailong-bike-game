@@ -4,7 +4,7 @@
 // + Conservation-of-Value 3-Way Conflict Resolution across ALL devices & tabs!
 // ============================================================================
 
-import { VALID_HERO_IDS, BEAN_TALENTS } from './config.js?v=8.8';
+import { VALID_HERO_IDS, BEAN_TALENTS } from './config.js?v=9.0';
 
 export const SAVE_KEY = 'pelican_brawl_save_v1';
 export const GUEST_SAVE_KEY = 'pelican_brawl_save_guest_v2';
@@ -242,6 +242,8 @@ export function createCloudStore(onUiRefresh) {
     try {
       const rawUserSave = localStorage.getItem(getSaveStorageKey(username));
       if (rawUserSave) return normalizeSaveObj(JSON.parse(rawUserSave));
+      const rawBak = localStorage.getItem(`${getSaveStorageKey(username)}_bak`);
+      if (rawBak) return normalizeSaveObj(JSON.parse(rawBak));
     } catch (_) {}
     if (fallbackBase && fallbackBase.save) return normalizeSaveObj(fallbackBase.save);
     return normalizeSaveObj(defaultSave);
@@ -265,7 +267,13 @@ export function createCloudStore(onUiRefresh) {
     const slotKey = authState.token && authState.username
       ? getSaveStorageKey(authState.username)
       : GUEST_SAVE_KEY;
-    try { localStorage.setItem(slotKey, JSON.stringify(save)); } catch (_) {}
+    const serialized = JSON.stringify(save);
+    try {
+      localStorage.setItem(slotKey, serialized);
+      if (authState.token && authState.username) {
+        localStorage.setItem(`${slotKey}_bak`, serialized);
+      }
+    } catch (_) {}
   }
 
   function recordServerSnapshot(respData, explicitUsername = '') {
@@ -431,7 +439,7 @@ export function createCloudStore(onUiRefresh) {
       .catch(() => '');
   }
 
-  async function submitAuth(mode, usernameRaw, password, hpTrapVal = '') {
+  async function submitAuth(mode, usernameRaw, password, hpTrapVal = '', guestId = '') {
     const username = String(usernameRaw || '').trim();
     if (username.length < 2 || username.length > 20 || /[\s<>'"\\/;]/.test(username)) {
       return { ok: false, error: '账号需为2~20位常规字符（不含空格）' };
@@ -465,8 +473,8 @@ export function createCloudStore(onUiRefresh) {
 
       const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login';
       const payload = mode === 'register'
-        ? { username, password, save: initialRegSave, ticket: currentTicket, hp_trap: hpTrapVal }
-        : { username, password };
+        ? { username, password, save: initialRegSave, ticket: currentTicket, hp_trap: hpTrapVal, guestId, wasGuest }
+        : { username, password, guestId };
 
       const resp = await fetch(endpoint, {
         method: 'POST',

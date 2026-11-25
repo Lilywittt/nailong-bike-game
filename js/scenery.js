@@ -775,6 +775,8 @@ export function drawSculptedTerrainAndRoad(ctx, opts) {
     superBonusTimer, now = performance.now()
   } = opts;
 
+  if (!Number.isFinite(startWX) || !Number.isFinite(endWX) || endWX < startWX || (endWX - startWX) > 25000) return;
+
   ensureSceneryStudio();
   const stageId = (st && st.id) || 'court';
   const pal = BIOME_PALETTES[stageId] || BIOME_PALETTES.court;
@@ -1171,6 +1173,7 @@ export function drawPipMiniScenery(ctx, vx0, vy0, vw, vh, st, focusWX, getSurfac
 }
 
 export function drawPipMiniTrackWorld(ctx, st, getSurfaceY, subStartWX, subEndWX, pits) {
+  if (!Number.isFinite(subStartWX) || !Number.isFinite(subEndWX) || subEndWX < subStartWX || (subEndWX - subStartWX) > 16000) return;
   const stageId = (st && st.id) || 'court';
   const pal = BIOME_PALETTES[stageId] || BIOME_PALETTES.court;
 
