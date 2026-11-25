@@ -25,7 +25,7 @@ import {
   getTalentLvFromSave,
   getSuperChargeSpeedMultFromSave,
   getAutoRegenPer5sFromSave
-} from './config.js?v=8.4';
+} from './config.js?v=8.5';
 
 import {
   buildAllSculptedAssets,
@@ -34,13 +34,13 @@ import {
   drawSculptedBikeAndHero,
   getEnemySpriteKey,
   getHeroPortraitDataUrl
-} from './models.js?v=8.4';
+} from './models.js?v=8.5';
 
 import {
   drawBiomeAtmosphere,
   drawSculptedTerrainAndRoad,
   drawHubDioramaBackdrop
-} from './scenery.js?v=8.4';
+} from './scenery.js?v=8.5';
 
 import {
   ensureAudio,
@@ -55,10 +55,10 @@ import {
   stopBossBgm,
   playSfx,
   tickProceduralBgm
-} from './audio.js?v=8.4';
+} from './audio.js?v=8.5';
 
-import { createCloudStore } from './cloud.js?v=8.4';
-import { createPartyController } from './party.js?v=8.4';
+import { createCloudStore } from './cloud.js?v=8.5';
+import { createPartyController } from './party.js?v=8.5';
 import {
   initBossCustomState,
   clearBossTransientHazards,
@@ -67,7 +67,7 @@ import {
   handlePlayerBossInteraction,
   updateBossEngine,
   renderBossArenaAndModel
-} from './bosses.js?v=8.4';
+} from './bosses.js?v=8.5';
 
 // Zero-allocation in-place array compaction (eliminates 1,400+ GC array allocations/sec!)
 function compactInPlace(arr, keepFn) {
@@ -2197,13 +2197,13 @@ function beginTutorialLesson(stepNum) {
       paused: false
     });
   } else if (stepNum === 2) {
-    const px = player.x + 290;
+    const px = player.x + 280;
     tutorialSession.targetX = px;
-    tutorialSession.pitEndX = px + 260;
-    pits.push({ x: px, len: 260, bridged: false, isTutPit: true });
-    rails.push({ x: px + 85, len: 245, hOff: 140, kind: 'suspenders', energizedTimer: 0 });
+    tutorialSession.pitEndX = px + 235;
+    pits.push({ x: px, len: 235, bridged: false, isTutPit: true });
+    rails.push({ x: px + 65, len: 275, hOff: 132, kind: 'suspenders', energizedTimer: 0 });
     for (let k = 0; k < 5; k++) {
-      beans.push({ x: px + 105 + k * 42, y: -165, val: 1, giant: k === 2, taken: false });
+      beans.push({ x: px + 95 + k * 42, y: -158, val: 1, giant: k === 2, taken: false });
     }
     setTutorialCoachDisplay({
       badge: '🎓 基础教学 2/7',
@@ -2213,13 +2213,23 @@ function beginTutorialLesson(stepNum) {
       paused: false
     });
   } else if (stepNum === 3) {
-    const ex = player.x + 340;
+    const ex = player.x + 335;
     tutorialSession.targetX = ex;
-    enemies.push({ x: ex, kind: 'dribbler', tutStep3: true, hit: false, phase: 0 });
+    tutorialSession.step3StompDone = false;
+    // 4 closely-spaced normal mobs (+188..+320px from freeze) so ANY tap/hold duration on ANY hero lands squarely on a head!
+    for (let k = 0; k < 4; k++) {
+      enemies.push({
+        x: ex + k * 44,
+        kind: k % 2 === 0 ? 'dribbler' : 'normal_frog',
+        tutStep3: true,
+        hit: false,
+        phase: k * 0.5
+      });
+    }
     setTutorialCoachDisplay({
       badge: '🎓 基础教学 3/7',
       title: '踩扁普通小怪',
-      main: '前方是一只没有护盾的<b>普通小怪</b>，接近时画面会暂停教你如何<b>踩头击败</b>它……',
+      main: '前方是一排没有护盾的<b>普通小怪</b>，接近时画面会暂停教你如何<b>起跳踩头击败</b>它们……',
       cta: '👀 正在接近普通小怪……',
       paused: false
     });
@@ -2424,8 +2434,40 @@ function tryConsumeTutorialInput(kind) {
     return true;
   }
 
-  // When NOT paused for prompt: allow free combat in Step 7 after guard-break, or skill hold in Step 6;
-  // during calm 0.8s approach to a teaching freeze-point, hold inputs steady so the lesson freezes cleanly!
+  // Allow responsive natural inputs if player reacts slightly before the exact freeze pixel!
+  if (tutorialSession.subPhase === 'approach') {
+    const distToTarget = tutorialSession.targetX - player.x;
+    if (tutorialSession.step === 1 && kind === 'jump' && distToTarget <= 230 && player.onGround) {
+      tutorialSession.subPhase = '1_jumped';
+      tutorialSession.phaseTimer = 0;
+      return true;
+    }
+    if (tutorialSession.step === 2 && kind === 'jump' && distToTarget <= 135 && player.onGround) {
+      tutorialSession.subPhase = '2A_jumped';
+      tutorialSession.phaseTimer = 0;
+      return true;
+    }
+    if (tutorialSession.step === 3 && kind === 'jump' && distToTarget <= 245 && player.onGround) {
+      tutorialSession.subPhase = '3_jumped';
+      tutorialSession.phaseTimer = 0;
+      return true;
+    }
+    if (tutorialSession.step === 4 && kind === 'action' && distToTarget <= 170) {
+      tutorialSession.subPhase = '4_struck';
+      tutorialSession.phaseTimer = 0;
+      return true;
+    }
+    if (tutorialSession.step === 6 && kind === 'skill' && distToTarget <= 230) {
+      tutorialSession.subPhase = '6_cast';
+      tutorialSession.phaseTimer = 0;
+      return true;
+    }
+  }
+  if (tutorialSession.step === 2 && tutorialSession.subPhase === '2A_jumped' && kind === 'jump' && !player.onGround) {
+    tutorialSession.subPhase = '2B_done';
+    tutorialSession.phaseTimer = 0;
+    return true;
+  }
   if (tutorialSession.step === 7 && tutorialSession.subPhase === '7_free_combat') {
     return kind === 'jump' || kind === 'action' || kind === 'skill';
   }
@@ -2533,7 +2575,7 @@ function tickTutorialDirector(realDt) {
 
   if (st === 1) {
     if (tutorialSession.subPhase === 'approach') {
-      if (tutorialSession.targetX - player.x <= 142 && player.onGround) {
+      if (tutorialSession.targetX - player.x <= 122 && player.onGround) {
         pauseForTutorialPrompt('jump', {
           badge: '🎓 基础教学 1/7 · 已暂停',
           title: '第 1 步：一段起跳越过障碍',
@@ -2543,11 +2585,9 @@ function tickTutorialDirector(realDt) {
         });
       }
     } else if (tutorialSession.subPhase === '1_jumped') {
-      if (player.vy < 0) jumpHeld = true; // Guarantee full smooth arc even on a brief tap
-      if (player.x > tutorialSession.targetX + 85 && player.onGround) {
-        jumpHeld = false;
+      if (player.x > tutorialSession.targetX + 75 && player.onGround) {
         tutorialSession.phaseTimer += realDt;
-        if (tutorialSession.phaseTimer >= 0.45) {
+        if (tutorialSession.phaseTimer >= 0.38) {
           addPopup('👏 一段跳掌握！', player.x + 28, player.y - 96, '#4ade80', 19);
           beginTutorialLesson(2);
         }
@@ -2558,7 +2598,7 @@ function tickTutorialDirector(realDt) {
 
   if (st === 2) {
     if (tutorialSession.subPhase === 'approach') {
-      if (tutorialSession.targetX - player.x <= 54 && player.onGround) {
+      if (tutorialSession.targetX - player.x <= 48 && player.onGround) {
         pauseForTutorialPrompt('jump', {
           badge: '🎓 基础教学 2/7（第1跳）· 已暂停',
           title: '第 2 步（上）：遇到宽断桥先起跳',
@@ -2570,23 +2610,22 @@ function tickTutorialDirector(realDt) {
     } else if (tutorialSession.subPhase === '2A_jumped') {
       jumpHeld = true;
       tutorialSession.phaseTimer += realDt;
-      if (tutorialSession.phaseTimer >= 0.24 || player.y <= -96) {
+      if (tutorialSession.phaseTimer >= 0.22 || player.y <= -92) {
         jumpHeld = false;
         pauseForTutorialPrompt('jump', {
           badge: '🎓 基础教学 2/7（第2跳）· 空中定格',
           title: '第 2 步（下）：空中再按一次触发二段跳！',
           main: '角色在<b>半空中还能再跳第二次</b>！现在再按起跳，就能稳稳跃上高空<b>背带滑轨</b>滑过断桥！',
           cta: pc ? '👉 在空中<b>再按一次 [空格键]</b> 二段跳！' : '👉 在空中<b>再点一次 [⬆️ 起跳]</b> 二段跳！',
-          callout: { x: tutorialSession.targetX + 150, y: -182, text: '✨ 高空背带滑轨 · 二段跳踩上去！', col: '#4ade80' }
+          callout: { x: tutorialSession.targetX + 145, y: -175, text: '✨ 高空背带滑轨 · 二段跳踩上去！', col: '#4ade80' }
         });
       }
     } else if (tutorialSession.subPhase === '2B_done') {
-      if (player.vy < -180) jumpHeld = true;
-      else jumpHeld = false;
-      if (player.x > tutorialSession.pitEndX + 85 && player.onGround) {
+      if (player.x > tutorialSession.pitEndX + 65 && (player.onGround || player.onRail)) {
         tutorialSession.phaseTimer += realDt;
-        if (tutorialSession.phaseTimer >= 0.40) {
+        if (tutorialSession.phaseTimer >= 0.38 && player.onGround) {
           addPopup('👏 二段跳与滑轨掌握！', player.x + 32, player.y - 98, '#4ade80', 19);
+          tutorialSession.step3Tries = 0;
           beginTutorialLesson(3);
         }
       }
@@ -2595,28 +2634,48 @@ function tickTutorialDirector(realDt) {
   }
 
   if (st === 3) {
-    const en = enemies.find((e) => e.tutStep3);
+    const firstEn = enemies.find((e) => e.tutStep3 && !e.hit);
     if (tutorialSession.subPhase === 'approach') {
-      if (en && !en.hit && en.x - player.x <= 198 && player.onGround) {
+      if (firstEn && firstEn.x - player.x <= 188 && player.onGround) {
         pauseForTutorialPrompt('jump', {
           badge: '🎓 基础教学 3/7 · 已暂停',
           title: '第 3 步：踩头击败普通小怪',
-          main: '遇到<b>没有护盾和尖刺</b>的普通小怪时，跳起来落到它<b>头顶</b>就能直接踩扁它，还会弹起爆出绿豆！',
-          cta: pc ? '👉 按 <b>[空格键]</b> 跳起踩扁前方小怪！' : '👉 点击 <b>[⬆️ 起跳]</b> 跳起踩扁前方小怪！',
-          callout: { x: en.x, y: -92, text: '👟 普通小怪 · 可从头顶踩扁！', col: '#38bdf8' }
+          main: '遇到<b>没有护盾和尖刺</b>的普通小怪时，跳起来落到它们<b>头顶</b>就能直接踩扁，还会弹起爆出绿豆！',
+          cta: pc ? '👉 按一下 <b>[空格键]</b> 跳起踩扁前方小怪！' : '👉 点击一下 <b>[⬆️ 起跳]</b> 踩扁前方小怪！',
+          callout: { x: firstEn.x + 44, y: -92, text: '👟 普通小怪队列 · 跳起踩头！', col: '#38bdf8' }
         });
       }
     } else if (tutorialSession.subPhase === '3_jumped') {
-      tutorialSession.phaseTimer += realDt;
-      if (tutorialSession.phaseTimer > 0.05) jumpHeld = false; // Crisp stomp arc landing right at +198px!
-      if (!en || en.hit) {
-        if (player.onGround) {
-          addPopup('👏 踩头连击掌握！', player.x + 28, player.y - 96, '#4ade80', 19);
-          beginTutorialLesson(4);
+      // Keep single-jump arc so accidental mid-air double-tap right after Step 2 never vaults over the whole row!
+      player.jumpsLeft = 0;
+      if (tutorialSession.step3StompDone) {
+        tutorialSession.subPhase = '3_stomped';
+        tutorialSession.phaseTimer = 0;
+        for (const e of enemies) {
+          if (e.tutStep3 && !e.hit) defeatEnemy(e);
         }
-      } else if (player.x > en.x + 55 && player.onGround) {
-        // Gentle auto-retry if missed
-        beginTutorialLesson(3);
+        setTutorialCoachDisplay({
+          badge: '🎓 基础教学 3/7 · 踩头成功！',
+          title: '干得漂亮！小怪被一脚踩扁！',
+          main: '踩中普通小怪头顶会无伤消灭它并借力弹起，接下来学习如何对付<b>持盾怪与电网</b>！',
+          cta: '✅ 落地后解锁【🐔 铁山靠】……',
+          paused: false
+        });
+      } else if (player.x > tutorialSession.targetX + 210 && player.onGround) {
+        tutorialSession.step3Tries = (tutorialSession.step3Tries || 0) + 1;
+        if (tutorialSession.step3Tries >= 2) {
+          // Anti-loop safety: never trap player in Step 3!
+          addPopup('👏 继续下一步教学！', player.x + 28, player.y - 96, '#4ade80', 19);
+          beginTutorialLesson(4);
+        } else {
+          beginTutorialLesson(3);
+        }
+      }
+    } else if (tutorialSession.subPhase === '3_stomped') {
+      tutorialSession.phaseTimer += realDt;
+      if (player.onGround && tutorialSession.phaseTimer >= 0.35) {
+        addPopup('👏 踩头连击掌握！', player.x + 28, player.y - 96, '#4ade80', 19);
+        beginTutorialLesson(4);
       }
     }
     return;
@@ -4506,6 +4565,7 @@ window.addEventListener('keyup', (e) => {
 function defeatEnemy(en) {
   if (en.hit) return;
   en.hit = true;
+  if (en.tutStep3) tutorialSession.step3StompDone = true;
   en.swallowing = false;
   const ey = getEnemyWorldY(en);
   combo += 1; comboTimer = 4.0;
@@ -5662,7 +5722,7 @@ function update(realDt) {
     if (player.onGround && tState.isPit) player.onGround = false;
     if (!player.onGround) {
       let grav = 1380;
-      if (h.id === 'pelican' && jumpHeld && player.vy > 40) {
+      if (h.id === 'pelican' && !(tutorialSession.active && tutorialSession.step === 3) && jumpHeld && player.vy > 40) {
         grav = 400; player.vy = Math.min(player.vy, 145);
       } else if (!jumpHeld && player.vy < -170) {
         grav = 2020;
@@ -6170,26 +6230,42 @@ function update(realDt) {
   }
 
   if (superBonusTimer <= 0 && !player.hyperDashActive) {
-    const hitW = player.giantTimer > 0 ? 68 : 36;
+    const stompW = player.giantTimer > 0 ? 74 : 52;
+    const bodyW = player.giantTimer > 0 ? 68 : 34;
     for (let i = 0; i < enemies.length; i++) {
       const en = enemies[i];
       if (en.hit || en.swallowing || en.isTutStep1) continue;
       const ey = getEnemyWorldY(en);
-      if (Math.abs(en.x - player.x) < hitW && Math.abs((ey - 22) - (player.y - 34)) < hitW) {
-        if (player.giantTimer > 0 || player.rocketDashTimer > 0 || headStartTargetDist > 0) {
+      const dx = Math.abs(en.x - player.x);
+      if (dx >= stompW) continue;
+
+      if (player.giantTimer > 0 || player.rocketDashTimer > 0 || headStartTargetDist > 0) {
+        if (Math.abs((ey - 22) - (player.y - 34)) < bodyW) {
           en.shielded = false;
           defeatEnemy(en);
-        } else if (en.kind === 'spiky_cat') {
+        }
+        continue;
+      }
+
+      // Generous Mario-grade Head-Stomp Detection (68px vertical band above enemy ankles!)
+      const isDroneStomp = en.kind === 'drone' && player.vy > -55 && player.y <= ey + 16 && player.y >= ey - 60;
+      const isGroundStomp = en.kind !== 'spiky_cat' && !player.onGround && player.vy > 12 && player.y <= ey + 4 && player.y >= ey - 64;
+      if (isDroneStomp || isGroundStomp) {
+        en.shielded = false;
+        en.stompKilled = true;
+        player.vy = en.kind === 'drone' ? -600 : -555;
+        player.jumpsLeft = Math.max(1, player.jumpsLeft);
+        defeatEnemy(en);
+        continue;
+      }
+
+      if (dx < bodyW && Math.abs((ey - 22) - (player.y - 34)) < bodyW) {
+        if (en.kind === 'spiky_cat') {
           en.hit = true;
           takePlayerDamage(13, false, {
             cause: '😾 炸毛尖刺耄耋猫',
             tip: '尖刺猫不可直接踩头！请用【铁山靠】正面撞飞或释放角色大招清场！'
           });
-        } else if ((player.vy > 30 && player.y < ey - 6) || (en.kind === 'drone' && player.vy > -45 && player.y < ey + 10)) {
-          en.shielded = false;
-          player.vy = en.kind === 'drone' ? -600 : -555;
-          player.jumpsLeft = Math.max(1, player.jumpsLeft);
-          defeatEnemy(en);
         } else {
           en.hit = true;
           const mobMeta = en.kind === 'boar_frog'
