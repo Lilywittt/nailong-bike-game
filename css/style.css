@@ -3005,7 +3005,7 @@ html.tutorial-clean-mode:not(.tutorial-boss-stage) .hp-center-row {
   transition: top 0.25s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 html.tutorial-boss-stage .tutorial-coach-hud {
-  top: max(84px, calc(env(safe-area-inset-top, 8px) + 78px));
+  top: max(104px, calc(env(safe-area-inset-top, 8px) + 96px));
 }
 .tutorial-coach-hud.hidden {
   display: none !important;

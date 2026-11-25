@@ -2282,9 +2282,10 @@ function beginTutorialLesson(stepNum) {
     player.flameFuel = 100;
     tutorialSession.bossSpawned = true;
     tutorialSession.bossParriedOnce = false;
+    const ddjTpl = BOSS_ROSTER.find((b) => b.kind === 'dingdong_ji') || BOSS_ROSTER[0];
     activeBoss = {
       tier: 1, tierLbl: '陪练', tierBg: '#f59e0b',
-      kind: 'dingdong_ji', sprite: 'boss_ddj', name: '🐔 陪练叮咚鸡',
+      kind: ddjTpl.kind, sprite: ddjTpl.sprite, name: '🐔 陪练叮咚鸡',
       maxHp: 75, hp: 75,
       dmgRate: 70, dmgBudget: 95, maxBudget: 95,
       phase: 1, maxPhases: 1,
@@ -2401,6 +2402,14 @@ function tryConsumeTutorialInput(kind) {
       tutorialSession.bossParriedOnce = true;
       player.skillCd = 0;
       player.flameFuel = 100;
+      if (activeBoss && activeBoss.isTutorialBoss) {
+        activeBoss.mech = 'idle';
+        activeBoss.mechSub = 0;
+        activeBoss.stunTimer = 5.0;
+        activeBoss.recoilX = 42;
+        playSfx('parry');
+        hitBoss(32, true, true);
+      }
       const pc = isPcControlHintMode();
       setTutorialCoachDisplay({
         badge: '🏆 毕业实战 7/7 · 趁眩晕输出！',
