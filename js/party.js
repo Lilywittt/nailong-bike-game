@@ -8,22 +8,22 @@
 //  5. Non-Lethal 1.3s Pelican Rescue Respawn & Server-Adjudicated Finish Podium
 // ============================================================================
 
-import { HEROES } from './config.js?v=8.2';
+import { HEROES } from './config.js?v=8.3';
 import {
   drawModelOn,
   drawSpaldingWheelOn,
   drawSculptedBikeAndHero,
   getHeroPortraitDataUrl
-} from './models.js?v=8.2';
+} from './models.js?v=8.3';
 import {
   drawPipMiniScenery,
   drawPipMiniTrackWorld
-} from './scenery.js?v=8.2';
+} from './scenery.js?v=8.3';
 import {
   ensureAudio,
   playVoiceSlice,
   playSfx
-} from './audio.js?v=8.2';
+} from './audio.js?v=8.3';
 
 const PARTY_PID_KEY = 'pelican_party_pid_v1';
 const PARTY_TAB_SID_KEY = 'pelican_party_tabsid_v1';
@@ -230,6 +230,7 @@ export function createPartyController(bridge) {
   const partyJoinRoomBtn = document.getElementById('partyJoinRoomBtn');
 
   const partyWaitCodeTxt = document.getElementById('partyWaitCodeTxt');
+  const partyCopyLinkBtn = document.getElementById('partyCopyLinkBtn');
   const partyCopyCodeBtn = document.getElementById('partyCopyCodeBtn');
   const partyWaitMeIco = document.getElementById('partyWaitMeIco');
   const partyWaitMeNm = document.getElementById('partyWaitMeNm');
@@ -4495,10 +4496,10 @@ export function createPartyController(bridge) {
     }, 450);
   }
 
-  async function callPartyLobbyApi(endpoint, extraBody = {}) {
+  async function callPartyLobbyApi(endpoint, extraBody = {}, silentError = false) {
     if (lobbyBusy) return null;
     lobbyBusy = true;
-    ensureAudio();
+    try { ensureAudio(); } catch (_) {}
     const authToken = (bridge.store.auth && bridge.store.auth.token) || '';
     const authUser = (bridge.store.auth && bridge.store.auth.username) || '';
     const hdrs = { 'Content-Type': 'application/json' };
@@ -4519,12 +4520,18 @@ export function createPartyController(bridge) {
       });
       const data = await resp.json();
       if (!resp.ok || !data || !data.ok) {
-        bridge.showToast(`⚠️ ${(data && data.error) || '联机请求失败，请重试'}`);
-        return null;
+        const errMsg = (data && data.error) || '联机请求失败，请重试';
+        if (!silentError) {
+          bridge.showToast(`⚠️ ${errMsg}`);
+          return null;
+        }
+        return { _err: errMsg, _status: resp.status };
       }
       return data;
     } catch (_) {
-      bridge.showToast('⚠️ 网络连接异常，请确认服务运行正常');
+      if (!silentError) {
+        bridge.showToast('⚠️ 网络连接异常，请确认服务运行正常');
+      }
       return null;
     } finally {
       lobbyBusy = false;
@@ -4602,6 +4609,49 @@ export function createPartyController(bridge) {
   async function openAndQuickMatch() {
     openLobbyModal();
     await handleQuickMatch();
+  }
+
+  async function checkUrlRoomAutoJoin() {
+    let rawRoom = '';
+    try {
+      const sp = new URLSearchParams(window.location.search || '');
+      rawRoom = sp.get('room') || '';
+    } catch (_) {}
+    const code = cleanPartyRoomCode(rawRoom);
+    if (code.length < 2) return false;
+
+    // Clean ?room=... from address bar so refreshing later returns cleanly to Hub
+    try {
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete('room');
+      window.history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+    } catch (_) {}
+
+    openLobbyModal();
+    if (partyJoinCodeInp) partyJoinCodeInp.value = code;
+
+    let data = await callPartyLobbyApi('/api/party/join', { roomCode: code }, true);
+    if (data && data._err) {
+      // If room expired or hasn't been opened yet, auto-create the exact room code so both friends land in it!
+      if (data._status === 404 || String(data._err).includes('不存在') || String(data._err).includes('过期')) {
+        data = await callPartyLobbyApi('/api/party/create', { customCode: code }, false);
+      } else {
+        bridge.showToast(`⚠️ ${data._err}`);
+        return true;
+      }
+    }
+    if (!data || data._err) return true;
+
+    if (data.status === 'waiting') {
+      if (partyLobbyEntryView) partyLobbyEntryView.classList.add('hidden-block');
+      if (partyLobbyWaitView) partyLobbyWaitView.classList.remove('hidden-block');
+      applyLobbySnapshot(data);
+      startWaitingRoomPoll();
+      bridge.showToast(`🎉 已通过邀战链接秒进房间 [${data.roomCode}]！`);
+    } else {
+      applyLobbySnapshot(data);
+    }
+    return true;
   }
 
   function resetPartyLocalToHubOnly() {
@@ -4721,6 +4771,18 @@ export function createPartyController(bridge) {
       clearPartyTimers();
       if (partyLobbyWaitView) partyLobbyWaitView.classList.add('hidden-block');
       if (partyLobbyEntryView) partyLobbyEntryView.classList.remove('hidden-block');
+    });
+  }
+  if (partyCopyLinkBtn) {
+    partyCopyLinkBtn.addEventListener('click', () => {
+      if (!party.roomCode) return;
+      const inviteUrl = `${window.location.origin}/?room=${encodeURIComponent(party.roomCode)}`;
+      const shareText = `🎉 来《鹈鹕测试大乱斗》双人飙车互坑！点链接秒进我房间 [${party.roomCode}]：\n${inviteUrl}`;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(shareText).catch(() => {});
+      }
+      playSfx('crate');
+      bridge.showToast(`🔗 已复制邀战直连链接！发给好友点开即可秒进房 [${party.roomCode}]！`);
     });
   }
   if (partyCopyCodeBtn) {
@@ -4853,6 +4915,7 @@ export function createPartyController(bridge) {
     flushLeaveBeacon,
     exitPartyToHub,
     openAndQuickMatch,
+    checkUrlRoomAutoJoin,
     getDizzyAngleOffset: () => 0,
     isPureKunRocket: () => party.fx.kunRocketTimer > 0,
     isHighSpeedBoost: () => (

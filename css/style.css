@@ -2946,3 +2946,203 @@ html.landscape-mode #toastPill {
     line-height: 1.35;
   }
 }
+
+/* ==================== v8.3 INTERACTIVE TUTORIAL, DEATH RECAP & PVP INVITE LINK ==================== */
+.tut-hub-pill {
+  background: linear-gradient(135deg, #fef08a, #fbbf24) !important;
+  color: #78350f !important;
+  border: 1.5px solid #d97706 !important;
+  font-weight: 900 !important;
+  box-shadow: 0 2px 0 rgba(180, 83, 9, 0.4);
+}
+.tut-hub-pill:active {
+  transform: translateY(1px);
+}
+
+.tutorial-coach-hud {
+  position: absolute;
+  top: max(112px, calc(env(safe-area-inset-top, 8px) + 104px));
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(92%, 445px);
+  z-index: 36;
+  background: linear-gradient(145deg, rgba(15, 23, 42, 0.94), rgba(30, 41, 59, 0.92));
+  border: 2.5px solid #facc15;
+  border-radius: 18px;
+  padding: 10px 14px 9px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45), 0 0 18px rgba(250, 204, 21, 0.35);
+  color: #f8fafc;
+  pointer-events: auto;
+  backdrop-filter: blur(8px);
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+.tutorial-coach-hud.hidden {
+  display: none !important;
+}
+.tutorial-coach-hud.parry-alert {
+  border-color: #4ade80;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5), 0 0 26px rgba(74, 222, 128, 0.68);
+  animation: tutCoachPulse 0.55s ease-in-out infinite alternate;
+}
+@keyframes tutCoachPulse {
+  0% { transform: translateX(-50%) scale(1); }
+  100% { transform: translateX(-50%) scale(1.035); }
+}
+.tut-coach-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.tut-step-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: linear-gradient(135deg, #facc15, #f59e0b);
+  color: #0f172a;
+  font-size: 11.5px;
+  font-weight: 900;
+  padding: 2px 9px;
+  border-radius: 999px;
+}
+.tut-skip-btn {
+  background: rgba(255, 255, 255, 0.12);
+  color: #cbd5e1;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 999px;
+  padding: 2.5px 9px;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.tut-skip-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+}
+.tut-coach-main {
+  font-size: 13.5px;
+  font-weight: 900;
+  line-height: 1.42;
+  color: #fef9c3;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+}
+.tut-coach-main b {
+  color: #4ade80;
+}
+.tut-dots-row {
+  display: flex;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 7px;
+}
+.tut-dot {
+  width: 24px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.35);
+  transition: all 0.22s ease;
+}
+.tut-dot.active {
+  width: 36px;
+  background: #facc15;
+  box-shadow: 0 0 8px rgba(250, 204, 21, 0.8);
+}
+.tut-dot.done {
+  background: #4ade80;
+}
+
+html.landscape-mode .tutorial-coach-hud {
+  top: 58px;
+  width: min(68%, 420px);
+  padding: 7px 12px;
+}
+html.landscape-mode .tut-coach-main {
+  font-size: 12px;
+}
+
+.tut-spotlight {
+  outline: 3.5px solid #fde047 !important;
+  box-shadow: 0 0 0 6px rgba(250, 204, 21, 0.38), 0 0 24px rgba(74, 222, 128, 0.85) !important;
+  animation: tutBtnRing 0.55s ease-in-out infinite alternate !important;
+}
+@keyframes tutBtnRing {
+  0% { transform: scale(1); }
+  100% { transform: scale(1.08); }
+}
+
+.death-recap-box {
+  background: linear-gradient(135deg, #fff1f2, #fef2f2);
+  border: 2px solid #fecdd3;
+  border-radius: 13px;
+  padding: 7px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+}
+.drb-cause {
+  font-size: 12px;
+  font-weight: 900;
+  color: #be123c;
+  line-height: 1.3;
+}
+.drb-tip {
+  font-size: 11.2px;
+  font-weight: 800;
+  color: #334155;
+  line-height: 1.35;
+}
+
+.party-link-copy-btn {
+  background: linear-gradient(135deg, #22c55e, #0ea5e9) !important;
+  color: #ffffff !important;
+  border: 1.5px solid #0284c7 !important;
+  font-weight: 900 !important;
+  padding: 5px 10px !important;
+  box-shadow: 0 2px 0 rgba(3, 105, 161, 0.45);
+}
+.party-link-copy-btn:active {
+  transform: translateY(1px);
+}
+
+.tut-welcome-card {
+  max-width: 392px;
+  border: 3px solid #facc15;
+  background: linear-gradient(180deg, #fffbeb 0%, #ffffff 100%);
+  gap: 10px;
+}
+.tut-welcome-desc {
+  font-size: 13px;
+  line-height: 1.52;
+  color: #334155;
+  font-weight: 700;
+  background: #fef9c3;
+  border: 1.5px solid #fde047;
+  border-radius: 12px;
+  padding: 9px 11px;
+}
+.tut-welcome-desc b {
+  color: #b45309;
+  font-weight: 900;
+}
+.pslot-key-tag {
+  position: absolute;
+  top: 3px;
+  left: 5px;
+  font-size: 9px;
+  font-weight: 900;
+  color: #fde047;
+  background: rgba(15, 23, 42, 0.8);
+  border-radius: 4px;
+  padding: 0 3.5px;
+  line-height: 1.3;
+  pointer-events: none;
+  display: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  html:not(.is-mobile-device) .pslot-key-tag {
+    display: inline-block;
+  }
+}
+
