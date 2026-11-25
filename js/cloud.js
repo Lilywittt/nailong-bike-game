@@ -4,7 +4,7 @@
 // + Conservation-of-Value 3-Way Conflict Resolution across ALL devices & tabs!
 // ============================================================================
 
-import { VALID_HERO_IDS, BEAN_TALENTS } from './config.js?v=8.5';
+import { VALID_HERO_IDS, BEAN_TALENTS } from './config.js?v=8.7';
 
 export const SAVE_KEY = 'pelican_brawl_save_v1';
 export const GUEST_SAVE_KEY = 'pelican_brawl_save_guest_v2';

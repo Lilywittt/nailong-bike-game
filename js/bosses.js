@@ -9,8 +9,8 @@
 //     telegraphs physically, and can be countered by Jump, 🐔铁山靠, Skills & Props!
 // ============================================================================
 
-import { drawModelOn, drawSpaldingWheelOn } from './models.js?v=8.5';
-import { playSfx, playCriticalMomentVoice } from './audio.js?v=8.5';
+import { drawModelOn, drawSpaldingWheelOn } from './models.js?v=8.7';
+import { playSfx, playCriticalMomentVoice } from './audio.js?v=8.7';
 
 export function initBossCustomState(boss, playerX) {
   boss.mech = 'idle';

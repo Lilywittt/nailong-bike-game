@@ -2959,17 +2959,21 @@ html.landscape-mode #toastPill {
   transform: translateY(1px);
 }
 
-/* Zero Information Overload: Hide all advanced HUD bars & locked buttons during Tutorial! */
+/* Zero Information Overload: Unlock HUD bars & buttons strictly step-by-step during Tutorial! */
 html.tutorial-clean-mode .hud-top > .hud-pill,
 html.tutorial-clean-mode #pauseBtn,
 html.tutorial-clean-mode #singleHudRow,
-html.tutorial-clean-mode #feverRow,
-html.tutorial-clean-mode #hudHealBtn,
-html.tutorial-clean-mode #hyperDashBtn,
 html.tutorial-clean-mode #quickDashWrap {
   display: none !important;
 }
-html.tutorial-clean-mode:not(.tutorial-boss-stage) .hp-center-row {
+html.tutorial-clean-mode:not(.tutorial-hp-unlocked) .hp-center-row {
+  display: none !important;
+}
+html.tutorial-clean-mode:not(.tutorial-heal-unlocked) #hudHealBtn {
+  display: none !important;
+}
+html.tutorial-clean-mode:not(.tutorial-hyper-unlocked) #hyperDashBtn,
+html.tutorial-clean-mode:not(.tutorial-hyper-unlocked) #feverRow {
   display: none !important;
 }
 .tut-hidden-ctrl {
@@ -3004,8 +3008,14 @@ html.tutorial-clean-mode:not(.tutorial-boss-stage) .hp-center-row {
   backdrop-filter: blur(10px);
   transition: top 0.25s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
+html.tutorial-hp-unlocked .tutorial-coach-hud {
+  top: max(68px, calc(env(safe-area-inset-top, 8px) + 60px));
+}
+html.tutorial-hyper-unlocked .tutorial-coach-hud {
+  top: max(94px, calc(env(safe-area-inset-top, 8px) + 86px));
+}
 html.tutorial-boss-stage .tutorial-coach-hud {
-  top: max(104px, calc(env(safe-area-inset-top, 8px) + 96px));
+  top: max(134px, calc(env(safe-area-inset-top, 8px) + 126px));
 }
 .tutorial-coach-hud.hidden {
   display: none !important;
