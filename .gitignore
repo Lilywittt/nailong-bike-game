@@ -5,3 +5,5 @@
 *.db-journal
 *.db-wal
 __pycache__/
+_local_dev_panel.js
+

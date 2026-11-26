@@ -1,4 +1,5 @@
 import { handlePartyApi } from "./party_worker.js";
+import { handlePayApi } from "./pay_worker.js";
 
 const VALID_HERO_LIST = ['nailong', 'ikun', 'pelican', 'naiwa', 'hakimi'];
 const VALID_HEROES = new Set(VALID_HERO_LIST);
@@ -530,8 +531,21 @@ export default {
     if (path.startsWith('/api/party/')) {
       return handlePartyApi(request, env, url, path, extractToken, readSafeJson, jsonResp, randomHex, VALID_HEROES);
     }
+    if (path.startsWith('/api/pay/')) {
+      return handlePayApi(request, env, url, path, {
+        extractToken,
+        readSafeJson,
+        jsonResp,
+        randomHex,
+        sanitizeSave,
+        extractSaveRev,
+        serializeSaveWithRev,
+        buildSignedAuthPayload,
+        maybeWriteSaveBackup
+      });
+    }
     if (path === '/api/health') {
-      return jsonResp({ ok: true, game: '鹈鹕测试大乱斗', cloudD1: true, shield: true, conflictEngine: 'v9.0', saveVault: true, partyRace: true });
+      return jsonResp({ ok: true, game: '鹈鹕测试大乱斗', cloudD1: true, shield: true, conflictEngine: 'v9.1', saveVault: true, partyRace: true });
     }
 
     if (path === '/api/auth/ticket' && request.method === 'GET') {
@@ -893,7 +907,7 @@ export default {
 
     if (request.method === 'GET' && STATIC_TEXT_WHITELIST[path]) {
       const entry = STATIC_TEXT_WHITELIST[path];
-      const kvKey = 'txt_v90_' + entry.file.replace(/[^a-zA-Z0-9_.-]/g, '_');
+      const kvKey = 'txt_v104_' + entry.file.replace(/[^a-zA-Z0-9_.-]/g, '_');
       const wantSync = url.searchParams.get('sync') === '1';
       let txt = wantSync ? null : await env.GAME_KV.get(kvKey);
       if (!txt) {

@@ -8,22 +8,22 @@
 //  5. Non-Lethal 1.3s Pelican Rescue Respawn & Server-Adjudicated Finish Podium
 // ============================================================================
 
-import { HEROES } from './config.js?v=9.0';
+import { HEROES } from './config.js?v=9.7';
 import {
   drawModelOn,
   drawSpaldingWheelOn,
   drawSculptedBikeAndHero,
   getHeroPortraitDataUrl
-} from './models.js?v=9.0';
+} from './models.js?v=9.7';
 import {
   drawPipMiniScenery,
   drawPipMiniTrackWorld
-} from './scenery.js?v=9.0';
+} from './scenery.js?v=9.7';
 import {
   ensureAudio,
   playVoiceSlice,
   playSfx
-} from './audio.js?v=9.0';
+} from './audio.js?v=9.7';
 
 const PARTY_PID_KEY = 'pelican_party_pid_v1';
 const PARTY_TAB_SID_KEY = 'pelican_party_tabsid_v1';
@@ -54,9 +54,9 @@ export const PARTY_MEME_ITEMS = {
   },
   bean_nitro: {
     id: 'bean_nitro',
-    ico: '🧋',
+    ico: '🍵',
     shortName: '南北绿豆',
-    fullName: '🧋 南北绿豆',
+    fullName: '🍵 南北绿豆',
     color: '#4ade80'
   },
   naiwa_swarm: {
@@ -131,9 +131,9 @@ export const PARTY_MEME_ITEMS = {
   },
   pan_shield: {
     id: 'pan_shield',
-    ico: '🥘',
+    ico: '🍳',
     shortName: '纯路人锅',
-    fullName: '🥘 纯路人铁锅',
+    fullName: '🍳 纯路人铁锅',
     color: '#facc15'
   }
 };
@@ -609,6 +609,48 @@ export function createPartyController(bridge) {
     });
   }
 
+  function addPartyPendulum(w, x, pivotH = 308, armLen = 148, maxAng = 0.82, omega = 2.25, phase = 0, style = 'hammer') {
+    if (!w.pendulums) return;
+    // Match the 1.5km sky progression rule: only place sky pendulums after 1,500m in race distance!
+    const distM = (x - 120) / 18;
+    if (distM < 1500) return;
+    w.pendulums.push({
+      x,
+      pivotH,
+      armLen,
+      maxAng,
+      omega,
+      phase,
+      style,
+      bobR: 29,
+      ang: 0,
+      bobX: x,
+      bobY: getSurfaceY(x) - (pivotH - armLen),
+      time: 0,
+      deflectedTimer: 0,
+      hitCd: 0,
+      clangCd: 0,
+      syncClock: true
+    });
+  }
+
+  function addPartySkyBumper(w, x, hAboveRoad = 102, theme = 0) {
+    if (!w.skyBumpers) return;
+    const distM = (x - 120) / 18;
+    if (distM < 1500) return;
+    const ry = getSurfaceY(x);
+    w.skyBumpers.push({
+      x,
+      y: ry - hAboveRoad,
+      baseY: ry - hAboveRoad,
+      hAbove: hAboveRoad,
+      cd: 0,
+      boing: 0,
+      phase: (x * 0.019) % 6.28,
+      theme
+    });
+  }
+
   function addBeanArc(beansArr, startX, count, spacing, baseH, arcH, giantEvery = 4) {
     for (let i = 0; i < count; i++) {
       const bx = startX + i * spacing;
@@ -674,10 +716,12 @@ export function createPartyController(bridge) {
       addCrate(p1x + 215, 196);
       addBeanArc(w.beans, p1x - 20, 7, 52, 184, 22, 3);
 
-      addBoostRing(sx + 1090, 154, false);
+      addBoostRing(sx + 1040, 154, false);
+      addPartyPendulum(w, sx + 1185, 308, 146, 0.82, 2.25, 0.4, 'hammer');
       w.enemies.push({ x: sx + 1090, kind: 'spiky_cat', hit: false, phase: 0.5 });
 
       w.pits.push({ x: p2x, len: 160, bridged: false });
+      addPartySkyBumper(w, p2x - 24, 98, 0);
       w.rails.push({ x: p2x - 75, len: 490, hOff: 152, kind: 'suspenders', energizedTimer: 0 });
       addBoostRing(p2x + 165, 205, true);
       addCrate(p2x + 250, 198);
@@ -728,7 +772,8 @@ export function createPartyController(bridge) {
       w.rails.push({ x: sx + 340, len: 920, hOff: 152, kind: 'suspenders', energizedTimer: 0 });
       w.rails.push({ x: sx + 1340, len: 960, hOff: 156, kind: 'maglev', energizedTimer: 0 });
       addBoostPad(sx + 520, 165, 152);
-      addBoostRing(sx + 1300, 202, true);
+      addPartyPendulum(w, sx + 1180, 312, 142, 0.80, 2.30, 1.1, 'wrecking');
+      addBoostRing(sx + 1310, 202, true);
       addBoostPad(sx + 1680, 165, 156);
       addBeanArc(w.beans, sx + 420, 12, 64, 192, 16, 3);
       addCrate(sx + 980, 196);
@@ -759,8 +804,10 @@ export function createPartyController(bridge) {
           phase: k * 0.8
         });
       }
-      addBoostRing(sx + 850, 165, false);
-      addCrate(sx + 920, 168);
+      addPartySkyBumper(w, sx + 710, 98, 1);
+      addPartyPendulum(w, sx + 835, 304, 228, 0.82, 2.2, 0.7, 'hammer');
+      addBoostRing(sx + 960, 194, true);
+      addCrate(sx + 1045, 168);
       w.rails.push({ x: sx + 1480, len: 420, hOff: 142, kind: 'suspenders', energizedTimer: 0 });
       addBoostPad(sx + 1580, 155, 142);
       addCrate(sx + 1780, 188);
@@ -803,6 +850,8 @@ export function createPartyController(bridge) {
       w.pits.push({ x: sx + 980, len: 135, bridged: false });
       w.lilyPads.push({ x: sx + 935, yOff: 24, anim: 0 });
       addBoostRing(sx + 1050, 178, true);
+      addPartySkyBumper(w, sx + 1340, 98, 0);
+      addPartyPendulum(w, sx + 1475, 306, 226, 0.82, 2.25, 1.9, 'wrecking');
 
       w.mudZones.push({ x: sx + 1780, len: 240, dried: false });
       addCrate(sx + 1900, 154);
@@ -841,6 +890,7 @@ export function createPartyController(bridge) {
   }
 
   function spawnTrackAhead(playerX) {
+    if (party.isTutorial) return;
     const horizonX = playerX + 2100;
     for (let i = 0; i < party.segments.length; i++) {
       const seg = party.segments[i];
@@ -1178,7 +1228,7 @@ export function createPartyController(bridge) {
       party.fx.mySpeechTimer = 2.0;
       bridge.addPopup('🛡️ 背带金钟罩!', p.x + 15, p.y - 98, '#38bdf8', 19);
     } else if (itemId === 'ddj_rush') {
-      party.fx.ddjRushTimer = 1.45;
+      party.fx.ddjRushTimer = party.isTutorial ? 2.35 : 1.65;
       party.fx.bballSlowTimer = 0;
       party.fx.manboSlowTimer = 0;
       p.vx = Math.max(p.vx, p.baseSpeed * 1.88);
@@ -1194,14 +1244,14 @@ export function createPartyController(bridge) {
       p.vx = Math.max(p.vx, p.baseSpeed * 1.56);
       p.magnetTimer = Math.max(p.magnetTimer || 0, 3.6);
       if (bridge.triggerPartyHitImpact) bridge.triggerPartyHitImpact(0.45, true);
-      party.fx.mySpeech = '🧋 南北绿豆吨吨吨！';
+      party.fx.mySpeech = '🍵 南北绿豆吨吨吨！';
       party.fx.mySpeechTimer = 2.0;
-      bridge.addPopup('🧋 南北绿豆氮气!', p.x + 18, p.y - 98, '#4ade80', 19);
+      bridge.addPopup('🍵 南北绿豆氮气!', p.x + 18, p.y - 98, '#4ade80', 19);
     } else if (itemId === 'pan_shield') {
       party.fx.panShieldTimer = 4.5;
-      party.fx.mySpeech = '🥘 纯路人别扇我！';
+      party.fx.mySpeech = '🍳 纯路人别扇我！';
       party.fx.mySpeechTimer = 2.0;
-      bridge.addPopup('🥘 纯路人铁锅!', p.x + 15, p.y - 98, '#facc15', 19);
+      bridge.addPopup('🍳 纯路人铁锅!', p.x + 15, p.y - 98, '#facc15', 19);
     } else if (itemId === 'kun_rocket') {
       party.fx.kunRocketTimer = 3.0;
       party.fx.bballSlowTimer = 0;
@@ -1266,8 +1316,8 @@ export function createPartyController(bridge) {
             toonLawyer: itemId === 'lawyer_seal'
           };
           party.rival.animState = { ...(party.rival.animState || {}), ...nextAnim };
-          party.tutRivalRecoverTimer = 2.35;
-          party.tutRivalVx = itemId === 'dagou_bite' ? -85 : 42;
+          party.tutRivalRecoverTimer = 2.65;
+          party.tutRivalVx = itemId === 'dagou_bite' ? -55 : 145;
           party.rivalHitFlash = 1.05;
           party.tutLastHitItem = itemId;
           playSfx('crate');
@@ -1288,7 +1338,7 @@ export function createPartyController(bridge) {
           party.hitMarkers.push({ target: 'rival', text: `💥 ${def.shortName} -${dmg}HP!`, color: '#fde047', life: 1.35 });
           bridge.addPopup(`🎯 ${def.ico}${def.shortName} 暴击对手!!`, p.x + 28, p.y - 122, '#fde047', 21);
           if (itemId === 'lawyer_seal' && partyLawyerOverlay) {
-            party.tutLawyerPreviewTimer = 1.05;
+            party.tutLawyerPreviewTimer = 2.2;
             partyLawyerOverlay.classList.remove('hidden');
           }
         }
@@ -1497,14 +1547,14 @@ export function createPartyController(bridge) {
       playSfx('parry');
       if (bridge.triggerPartyHitImpact) bridge.triggerPartyHitImpact(0.65, true);
       w.shockwaves.push({ x: p.x, y: p.y - 46, r: 18, maxR: 320, life: 0.4, color: '#facc15', harmless: false });
-      bridge.addPopup('🥘 纯路人反弹!!', p.x + 18, p.y - 104, '#facc15', 22);
+      bridge.addPopup('🍳 纯路人反弹!!', p.x + 18, p.y - 104, '#facc15', 22);
       spawnSculptedChaosBarrage('me', 'rival', itemId);
       launchHomingMissileVisual('rival', itemId, () => {
         if (party.isTutorial && party.rival) {
           party.rival.hp = 20;
           party.rival.animState = { ...(party.rival.animState || {}), toonTruck: itemId === 'truck_isekai' };
-          party.tutRivalRecoverTimer = 2.4;
-          party.tutRivalVx = 40;
+          party.tutRivalRecoverTimer = 2.65;
+          party.tutRivalVx = 135;
           if (itemId === 'bball_rain') {
             party.rivalRender.bballTimer = 2.0;
             spawnBasketballRainVisual('rival');
@@ -1513,9 +1563,9 @@ export function createPartyController(bridge) {
           party.tutPanReflectedDone = true;
           playSfx('crate');
           playSfx('parry');
-          showPartyBanner('🥘 纯路人铁锅原路反弹泥头车！阿坤被自己召唤的泥头车创飞上天！', 2600);
-          party.hitMarkers.push({ target: 'rival', text: '🥘 铁锅反弹 -50HP!', color: '#fde047', life: 1.35 });
-          bridge.addPopup('🎯 铁锅反弹泥头车创飞阿坤!!', p.x + 26, p.y - 122, '#fde047', 21);
+          showPartyBanner('🍳 铁锅成功反弹泥头车！', 2200);
+          party.hitMarkers.push({ target: 'rival', text: '🍳 铁锅反弹 -50HP!', color: '#fde047', life: 1.35 });
+          bridge.addPopup('🎯 反弹命中!', p.x + 26, p.y - 122, '#fde047', 21);
         }
       });
       bridge.refreshBuffChips();
@@ -1756,7 +1806,7 @@ export function createPartyController(bridge) {
       bridge.getWorldArrays().shockwaves.push({
         x: p.x, y: p.y - 46, r: 18, maxR: 310, life: 0.4, color: '#facc15', harmless: false
       });
-      bridge.addPopup('🥘 纯路人反弹!!', p.x + 18, p.y - 104, '#facc15', 21);
+      bridge.addPopup('🍳 纯路人反弹!!', p.x + 18, p.y - 104, '#facc15', 21);
       spawnSculptedChaosBarrage('me', 'rival', ev.itemId || 'bball_rain');
       launchHomingMissileVisual('rival', ev.itemId || 'bball_rain');
       bridge.refreshBuffChips();
@@ -2760,6 +2810,14 @@ export function createPartyController(bridge) {
     }
 
     // 2. Tick Local Party Buff / Debuff / Rescue Timers
+    if (party.isTutorial) {
+      if (partyProgressHud) {
+        partyProgressHud.classList.toggle('hidden', party.tutStep < 10);
+      }
+      if (realDt <= 0.0001) {
+        return;
+      }
+    }
     const fx = party.fx;
     for (const k of [
       'koCrawlTimer',
@@ -3039,11 +3097,11 @@ export function createPartyController(bridge) {
       } else if (roll < 0.54) {
         kind = 'sky_ddj'; ico = '🐔'; chuteCol = '#facc15'; // 叮咚鸡血瞬喷
       } else if (roll < 0.74) {
-        kind = 'sky_bean_nitro'; ico = '🧋'; chuteCol = '#4ade80'; // 南北绿豆氮气
+        kind = 'sky_bean_nitro'; ico = '🍵'; chuteCol = '#4ade80'; // 南北绿豆氮气
       } else if (roll < 0.88) {
         kind = 'sky_spicy'; ico = '🌶️'; chuteCol = '#f97316'; // 卫龙辣条喷射
       } else {
-        kind = 'sky_spring'; ico = '🪽'; chuteCol = '#a855f7'; // 唱跳五连飞翼
+        kind = 'sky_spring'; ico = '🕊️'; chuteCol = '#a855f7'; // 唱跳五连飞翼
       }
       const dropX = 120 + party.nextSkyDropDist * 18;
       const roadY = getSurfaceY(dropX);
@@ -3108,7 +3166,7 @@ export function createPartyController(bridge) {
           p.magnetTimer = Math.max(p.magnetTimer || 0, 3.6);
           playVoiceSlice('hakimi', 0.0, 1.6, 0.38, 'party_vo', 600, false);
           playSfx('chime', 2);
-          bridge.addPopup('🧋 南北绿豆氮气!', p.x + 22, p.y - 102, '#4ade80', 19);
+          bridge.addPopup('🍵 南北绿豆氮气!', p.x + 22, p.y - 102, '#4ade80', 19);
         } else if (sd.kind === 'sky_spicy') {
           fx.spicyDashTimer = Math.max(fx.spicyDashTimer, 2.2);
           playSfx('hyper');
@@ -3120,7 +3178,7 @@ export function createPartyController(bridge) {
           p.vy = Math.min(p.vy, -460);
           p.onGround = false;
           playSfx('jump');
-          bridge.addPopup('🪽 唱跳五连跳!', p.x + 22, p.y - 102, '#a855f7', 19);
+          bridge.addPopup('🕊️ 唱跳五连跳!', p.x + 22, p.y - 102, '#a855f7', 19);
         } else {
           grantMysteryBoxItem();
         }
@@ -3186,7 +3244,7 @@ export function createPartyController(bridge) {
         if (fx.panShieldTimer > 0) {
           fx.panShieldTimer = 0;
           playSfx('parry');
-          showPartyBanner('🥘 纯路人铁锅震飞了圆头耄耋路障！', 2200);
+          showPartyBanner('🍳 铁锅震飞了耄耋路障！', 1800);
         } else if (fx.kunRocketTimer > 0) {
           playSfx('crater');
           bridge.addPopup('🚀 窜天猴撞飞耄耋!', tr.x, roadY - 68, '#fde047', 17);
@@ -3267,7 +3325,7 @@ export function createPartyController(bridge) {
         rv.finished = true;
         rv.dist = party.raceDist;
         playSfx('chime', 3);
-        showPartyBanner('🏁 陪练阿坤也终于吭哧吭哧冲过终点啦！点击顶部绿色按钮领取 +500🌿 毕业大奖！', 3200);
+        showPartyBanner('🏁 对手已冲线完赛', 2400);
       }
     }
     if (party.rival && party.rivalRender.hasData) {
@@ -3462,7 +3520,7 @@ export function createPartyController(bridge) {
           if (partySpecTutDoneBtn) partySpecTutDoneBtn.classList.toggle('hidden', !party.isTutorial);
           if (partySpecStatusTxt) partySpecStatusTxt.textContent = describeRivalLiveAction();
         }
-        bridge.showToast('🥇 第1名冲线！镜头已自动切至实时观战看对手在干嘛！');
+        bridge.showToast('🥇 第1名冲线！已切换观战视角');
       }
       if (!party.isTutorial) {
         if (bridge.logFinishedRun) {
@@ -3561,11 +3619,11 @@ export function createPartyController(bridge) {
     if (fx.koCrawlTimer > 0) out.push(`💀 击倒龟速 ${fx.koCrawlTimer.toFixed(1)}s`);
     else if (party.aliveStreakSec >= 1.5) out.push(`🔥 无伤提速 ${aliveMult.toFixed(2)}x`);
     if (fx.oneHitShieldTimer > 0) out.push(`🛡️ 背带金钟罩 ${fx.oneHitShieldTimer.toFixed(1)}s`);
-    if (fx.panShieldTimer > 0) out.push(`🥘 纯路人铁锅 ${fx.panShieldTimer.toFixed(1)}s`);
+    if (fx.panShieldTimer > 0) out.push(`🍳 纯路人铁锅 ${fx.panShieldTimer.toFixed(1)}s`);
     if (party.staminaBoosting) out.push(`⚡ 疾驰冲刺`);
     if (fx.kunRocketTimer > 0) out.push(`🚀 背带窜天猴 ${fx.kunRocketTimer.toFixed(1)}s`);
     if (fx.ddjRushTimer > 0) out.push(`🐔 叮咚鸡血 ${fx.ddjRushTimer.toFixed(1)}s`);
-    if (fx.beanNitroTimer > 0) out.push(`🧋 南北绿豆 ${fx.beanNitroTimer.toFixed(1)}s`);
+    if (fx.beanNitroTimer > 0) out.push(`🍵 南北绿豆 ${fx.beanNitroTimer.toFixed(1)}s`);
     if (fx.spicyDashTimer > 0) out.push(`🌶️ 辣条喷射 ${fx.spicyDashTimer.toFixed(1)}s`);
     if (fx.naiwaPileTimer > 0) out.push(`🐸 奶蛙压塌 ${fx.naiwaPileTimer.toFixed(1)}s`);
     if (fx.truckRammedTimer > 0) out.push(`🚛 被泥头车创飞!`);
@@ -4432,7 +4490,7 @@ export function createPartyController(bridge) {
       ctx.font = '900 22px sans-serif';
       ctx.textAlign = 'center';
       const orbitA = now * 0.008;
-      ctx.fillText('🥘', p.x + Math.cos(orbitA) * 66, p.y - 52 + Math.sin(orbitA) * 44);
+      ctx.fillText('🍳', p.x + Math.cos(orbitA) * 66, p.y - 52 + Math.sin(orbitA) * 44);
       ctx.restore();
     }
 
@@ -5434,6 +5492,8 @@ export function createPartyController(bridge) {
     w.mudZones.length = 0;
     w.iceZones.length = 0;
     w.snowballs.length = 0;
+    if (w.pendulums) w.pendulums.length = 0;
+    if (w.skyBumpers) w.skyBumpers.length = 0;
     party.crates.length = 0;
     party.boostRings.length = 0;
     party.boostPads.length = 0;
@@ -5461,6 +5521,62 @@ export function createPartyController(bridge) {
     party.rivalRender.bballTimer = 0;
   }
 
+  function resetTutorialMiniStage() {
+    const p = bridge.player;
+    p.x = 240;
+    p.y = getSurfaceY(240);
+    p.vx = p.baseSpeed;
+    p.vy = 0;
+    p.onGround = true;
+    p.onRail = null;
+    p.jumpsLeft = bridge.getMaxJumps();
+    party.fx.kunRocketTimer = 0;
+    party.fx.ddjRushTimer = 0;
+    party.fx.beanNitroTimer = 0;
+    party.fx.roadPadBoostTimer = 0;
+    party.fx.respawnTimer = 0;
+    party.staminaBoosting = false;
+    party.staminaHeld = false;
+    for (let idx = 0; idx < party.ropeNodes.length; idx++) {
+      const rx = 240 + (idx / 13) * 120;
+      const ry = getSurfaceY(rx) - 31;
+      party.ropeNodes[idx].x = rx;
+      party.ropeNodes[idx].y = ry;
+      party.ropeNodes[idx].px = rx;
+      party.ropeNodes[idx].py = ry;
+    }
+  }
+
+  function loadPvpTutorialSingleItem(itemId, rivalAheadPx = 265) {
+    if (!party.active || !party.isTutorial) return;
+    const p = bridge.player;
+    resetTutorialMiniStage();
+    clearPvpTutorialWorldTrack();
+    party.tutShowPip = true;
+    resetTutorialRivalClean(rivalAheadPx, p.baseSpeed, 100);
+    party.slots = [itemId, null];
+    party.tutQueuedThirdItem = '';
+    party.tutPendingRefill = false;
+    renderItemSlotsUI();
+    const rw = bridge.getWorldArrays();
+    if (itemId === 'bean_nitro') {
+      addBeanArc(rw.beans, p.x + 85, 10, 38, 48, 32, 2);
+      addBeanArc(rw.beans, p.x + 520, 10, 40, 56, 36, 2);
+      addBeanArc(rw.beans, p.x + 980, 10, 40, 50, 30, 2);
+    } else if (itemId === 'ddj_rush') {
+      rw.mudZones.push({ x: p.x + 65, len: 260, dried: false });
+      rw.mudZones.push({ x: p.x + 450, len: 280, dried: false });
+      addBeanArc(rw.beans, p.x + 120, 12, 52, 46, 26, 3);
+    } else if (itemId === 'kun_rocket') {
+      for (let g = 0; g < 3; g++) {
+        const gx = p.x + 180 + g * 460;
+        rw.laserGates.push({ x: gx, hacked: false });
+        rw.enemies.push({ x: gx + 120, kind: g % 2 === 0 ? 'shield_lawyer' : 'spiky_cat', shielded: g % 2 === 0, shotDone: true, hit: false, phase: g });
+      }
+      addBeanArc(rw.beans, p.x + 220, 14, 78, 84, 38, 2);
+    }
+  }
+
   function configurePvpTutorialStep(stepNum) {
     if (!party.active || !party.isTutorial) return null;
     const p = bridge.player;
@@ -5476,24 +5592,20 @@ export function createPartyController(bridge) {
     }
     party.tutPendingRefill = false;
     clearPvpTutorialWorldTrack();
+    resetTutorialMiniStage();
 
-    // Lesson 1: Dual High-Altitude Turbo Boost Rings + Elevated Skyrail
+    // Lesson 1: Single-Jump Guaranteed Turbo Boost Ring
     if (stepNum === 1) {
       party.tutShowPip = false;
       party.tutSpotlightPip = false;
       party.tutRingCleared = false;
       party.tutRingsHitCount = 0;
-      resetTutorialRivalClean(155, 322, 100);
-      const r1 = p.x + 275;
-      const r2 = p.x + 690;
-      addBoostRing(r1, 118, false);
+      resetTutorialRivalClean(170, 322, 100);
+      const r1 = p.x + 195;
+      addBoostRing(r1, 90, false);
       party.boostRings[party.boostRings.length - 1].isTutRing = true;
-      addBeanArc(w.beans, r1 - 50, 5, 30, 82, 48, 2);
-      w.rails.push({ x: r2 - 65, len: 290, hOff: 132, kind: 'maglev', energizedTimer: 0 });
-      addBoostPad(r2 - 15, 145, 132);
-      addBoostRing(r2 + 95, 178, true);
-      party.boostRings[party.boostRings.length - 1].isTutRing = true;
-      return { targetX: r1, secondRingX: r2 + 95 };
+      addBeanArc(w.beans, r1 - 45, 5, 28, 62, 42, 2);
+      return { targetX: r1 };
     }
 
     // Lesson 2: Free-Charging Super Sprint Gauge (`Shift`) Real Overtake!
@@ -5501,63 +5613,42 @@ export function createPartyController(bridge) {
       party.stamina = 100;
       party.staminaTrail = 100;
       party.staminaExhaustCd = 0;
-      resetTutorialRivalClean(255, 322, 100);
-      addBeanArc(w.beans, p.x + 160, 8, 38, 48, 24, 3);
-      return { targetX: p.x + 150 };
+      resetTutorialRivalClean(170, 292, 100);
+      addBeanArc(w.beans, p.x + 110, 7, 36, 46, 20, 3);
+      return { targetX: p.x + 120 };
     }
 
-    // Lesson 3: 3D Elastic Rope Slingshot + Live 60fps Rival PiP Window
+    // Lesson 3: 3D Elastic Rope + Double-Jump Gold Boost Ring
     if (stepNum === 3) {
       party.tutShowPip = true;
       party.tutSpotlightPip = true;
       party.tutRingCleared = false;
       party.tutRopeSlingshotTimer = 1.85;
-      resetTutorialRivalClean(540, 318, 100);
-      const padX = p.x + 265;
-      w.lilyPads.push({ x: padX, yOff: 26, anim: 0 });
-      addBoostRing(padX + 120, 152, true);
+      resetTutorialRivalClean(440, 318, 100);
+      const rGold = p.x + 255;
+      addBoostRing(rGold, 152, true);
       party.boostRings[party.boostRings.length - 1].isTutRing = true;
-      addBeanArc(w.beans, padX + 20, 6, 34, 96, 66, 2);
-      return { targetX: padX };
+      addBeanArc(w.beans, p.x + 125, 6, 28, 92, 62, 2);
+      return { targetX: rGold };
     }
 
-    // Lesson 4: ALL 3 Rush/Sprint Items (`bean_nitro`, `ddj_rush`, `kun_rocket`)
+    // Lessons 4~7: Paused 1-by-1 Hands-On Item Practice!
     if (stepNum === 4) {
       party.tutSpotlightPip = false;
-      resetTutorialRivalClean(265, 330, 100);
-      party.slots = ['bean_nitro', 'ddj_rush'];
-      party.tutQueuedThirdItem = 'kun_rocket';
-      renderItemSlotsUI();
-      addBeanArc(w.beans, p.x + 150, 12, 34, 54, 46, 2);
-      w.mudZones.push({ x: p.x + 420, len: 210, dried: false });
-      return { targetX: p.x + 140 };
+      loadPvpTutorialSingleItem('bean_nitro', 260);
+      return { targetX: p.x + 100 };
     }
-
-    // Lesson 5: 3 Heavy Smash Offensive Items (`truck_isekai`, `lightning_whip`, `naiwa_swarm`)
     if (stepNum === 5) {
-      resetTutorialRivalClean(230, 332, 100);
-      party.slots = ['truck_isekai', 'lightning_whip'];
-      party.tutQueuedThirdItem = 'naiwa_swarm';
-      renderItemSlotsUI();
-      return { targetX: p.x + 140 };
+      loadPvpTutorialSingleItem('truck_isekai', 275);
+      return { targetX: p.x + 100 };
     }
-
-    // Lesson 6: 3 Control/Harass Items (`dagou_bite`, `bball_rain`, `maodie_trap`)
     if (stepNum === 6) {
-      resetTutorialRivalClean(225, 332, 100);
-      party.slots = ['dagou_bite', 'bball_rain'];
-      party.tutQueuedThirdItem = 'maodie_trap';
-      renderItemSlotsUI();
-      return { targetX: p.x + 140 };
+      loadPvpTutorialSingleItem('dagou_bite', 275);
+      return { targetX: p.x + 100 };
     }
-
-    // Lesson 7: 3 Tactical Steal/Blind Items (`pelican_carry`, `manbo_steal`, `lawyer_seal`)
     if (stepNum === 7) {
-      resetTutorialRivalClean(225, 332, 100);
-      party.slots = ['pelican_carry', 'manbo_steal'];
-      party.tutQueuedThirdItem = 'lawyer_seal';
-      renderItemSlotsUI();
-      return { targetX: p.x + 140 };
+      loadPvpTutorialSingleItem('pelican_carry', 275);
+      return { targetX: p.x + 100 };
     }
 
     // Lesson 8: BOTH Defensive Shields (`8A: timed_shield` -> `8B: pan_shield` Dump Truck Reflection!)
@@ -5569,7 +5660,7 @@ export function createPartyController(bridge) {
       resetTutorialRivalClean(245, 330, 100);
       party.slots = ['timed_shield', null];
       renderItemSlotsUI();
-      showPartyBanner('⚠️ 来袭预警：陪练阿坤向你狂撒 🐸 奶蛙群！准备按 1/Q 开启金钟罩！', 2600);
+      showPartyBanner('⚠️ 奶蛙群来袭！准备开启金钟罩', 2000);
       playSfx('chime', 3);
       spawnSculptedChaosBarrage('rival', 'me', 'naiwa_swarm');
       launchHomingMissileVisual('me', 'naiwa_swarm', () => {
@@ -5636,7 +5727,7 @@ export function createPartyController(bridge) {
     resetTutorialRivalClean(250, 330, 85);
     party.slots = [null, 'pan_shield'];
     renderItemSlotsUI();
-    showPartyBanner('⚠️ 第二波重击来袭：阿坤召唤 🚛 大运泥头车！准备按 2/E 开启纯路人铁锅反弹！', 2800);
+    showPartyBanner('⚠️ 泥头车来袭！准备开启铁锅反弹', 2000);
     playSfx('chime', 3);
     spawnSculptedChaosBarrage('rival', 'me', 'truck_isekai');
     launchHomingMissileVisual('me', 'truck_isekai', () => {
@@ -5648,13 +5739,31 @@ export function createPartyController(bridge) {
     });
   }
 
-  function refillPvpTutorialStepItems(stepNum) {
+  function refillPvpTutorialStepItems(stepNum, singleItemId = '') {
+    if (singleItemId) {
+      loadPvpTutorialSingleItem(singleItemId, 275);
+      return null;
+    }
     return configurePvpTutorialStep(stepNum || party.tutStep);
   }
 
   function getPvpTutorialState() {
     const incoming = party.homingMissiles.find((m) => m.target === 'me') || null;
     const p = bridge.player;
+    const showcaseBusy = (
+      party.homingMissiles.length > 0
+      || party.chaosProjectiles.length > 0
+      || party.visualBballs.length > 0
+      || party.tutRivalRecoverTimer > 0.05
+      || party.tutLawyerPreviewTimer > 0.05
+      || (party.rivalRender.bballTimer || 0) > 0.05
+      || party.fx.beanNitroTimer > 0.05
+      || party.fx.ddjRushTimer > 0.05
+      || party.fx.kunRocketTimer > 0.05
+      || party.fx.whipBoostTimer > 0.05
+      || party.fx.pelicanBoostTimer > 0.15
+      || party.fx.manboBoostTimer > 0.35
+    );
     return {
       slot0: party.slots[0],
       slot1: party.slots[1],
@@ -5670,6 +5779,7 @@ export function createPartyController(bridge) {
       lastHitItem: party.tutLastHitItem,
       activeMissilesOut: party.homingMissiles.some((m) => m.target === 'rival'),
       kunRocketActive: party.fx.kunRocketTimer > 0,
+      showcaseBusy,
       shieldBlockedDone: party.tutShieldBlockedDone,
       panReflectedDone: party.tutPanReflectedDone,
       meleeHitDone: party.tutMeleeHitDone,
@@ -5875,6 +5985,10 @@ export function createPartyController(bridge) {
     const p = bridge.player;
     const dx = party.rivalRender.x - p.x;
     const fast = party.staminaBoosting || party.fx.ddjRushTimer > 0 || party.fx.whipBoostTimer > 0;
+    if (party.isTutorial && party.tutRivalRecoverTimer > 0 && dx >= -420 && dx < -15) {
+      // During tutorial item showcase, shift camera slightly forward so player sees BOTH their overtake AND rival suffering right behind!
+      return { ratio: 0.44, zoom: 0.88 };
+    }
     if (dx >= -290 && dx < -15) {
       // Rival right behind us -> shift player slightly right so we see rival + rope behind us!
       return { ratio: 0.30, zoom: 0.91 };
@@ -5895,7 +6009,12 @@ export function createPartyController(bridge) {
     closeModalsOnEsc: () => {
       if (partyLobbyOverlay && !partyLobbyOverlay.classList.contains('hidden')) closeLobbyModal();
     },
-    setStaminaHeld: (v) => { activateStaminaHold(Boolean(v)); },
+    setStaminaHeld: (v) => {
+      if (v && party.isTutorial && party.tutStep === 2) {
+        party.tutAutoHoldStamina = Math.max(party.tutAutoHoldStamina || 0, 1.05);
+      }
+      activateStaminaHold(Boolean(v));
+    },
     startPvpTutorialSession,
     configurePvpTutorialStep,
     triggerPvpTutorialSubPhase8B,

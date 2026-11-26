@@ -62,6 +62,9 @@ def _load_local_dotenv():
 _load_local_dotenv()
 
 
+_ALIPAY_KEY_MTIME = -1.0
+
+
 def _load_alipay_keys():
     kp = os.path.join(ROOT_DIR, ".env.alipay_keys.json")
     if os.path.isfile(kp):
@@ -70,15 +73,15 @@ def _load_alipay_keys():
                 d = json.load(fh)
                 return (
                     str(d.get("alipay_app_id") or "").strip(),
-                    str(d.get("app_private_key") or "").strip(),
-                    str(d.get("alipay_public_key") or "").strip(),
+                    re.sub(r"\s+", "", str(d.get("app_private_key") or "")),
+                    re.sub(r"\s+", "", str(d.get("alipay_public_key") or "")),
                 )
         except Exception:
             pass
     return (
         os.environ.get("ALIPAY_APP_ID", "").strip(),
-        os.environ.get("ALIPAY_PRIVATE_KEY", "").strip(),
-        os.environ.get("ALIPAY_PUBLIC_KEY", "").strip(),
+        re.sub(r"\s+", "", os.environ.get("ALIPAY_PRIVATE_KEY", "")),
+        re.sub(r"\s+", "", os.environ.get("ALIPAY_PUBLIC_KEY", "")),
     )
 
 
@@ -93,6 +96,20 @@ ALLOW_AFDIAN_FALLBACK = os.environ.get("ALLOW_AFDIAN_FALLBACK", "0") == "1"
 REAL_PAY_ENABLED = bool(ALIPAY_DIRECT_CONFIGURED or (ALLOW_AFDIAN_FALLBACK and AFDIAN_USER_ID and AFDIAN_TOKEN))
 # Sandbox fake pay is strictly OFF whenever real payment is configured!
 SANDBOX_PAY_ENABLED = (os.environ.get("PELICAN_PAY_ENV", "") == "local_sandbox") and not REAL_PAY_ENABLED
+
+
+def _refresh_alipay_keys_if_needed():
+    global _ALIPAY_KEY_MTIME, ALIPAY_APP_ID, ALIPAY_PRIVATE_KEY_B64, ALIPAY_PUBLIC_KEY_B64
+    global ALIPAY_DIRECT_CONFIGURED, REAL_PAY_ENABLED, SANDBOX_PAY_ENABLED
+    kp = os.path.join(ROOT_DIR, ".env.alipay_keys.json")
+    mtime = os.path.getmtime(kp) if os.path.isfile(kp) else 0.0
+    if mtime == _ALIPAY_KEY_MTIME:
+        return
+    _ALIPAY_KEY_MTIME = mtime
+    ALIPAY_APP_ID, ALIPAY_PRIVATE_KEY_B64, ALIPAY_PUBLIC_KEY_B64 = _load_alipay_keys()
+    ALIPAY_DIRECT_CONFIGURED = bool(ALIPAY_APP_ID and ALIPAY_PRIVATE_KEY_B64 and ALIPAY_PUBLIC_KEY_B64)
+    REAL_PAY_ENABLED = bool(ALIPAY_DIRECT_CONFIGURED or (ALLOW_AFDIAN_FALLBACK and AFDIAN_USER_ID and AFDIAN_TOKEN))
+    SANDBOX_PAY_ENABLED = (os.environ.get("PELICAN_PAY_ENV", "") == "local_sandbox") and not REAL_PAY_ENABLED
 FIRST_RECHARGE_BONUS_BEANS = 2000
 ORDER_TTL_MS = 20 * 60 * 1000  # 20 minutes
 VALID_PAY_CHANNELS = ("wechat", "alipay")
@@ -739,10 +756,11 @@ def make_qr_data_url(url_text: str) -> str:
     import io
     import qrcode
 
+    is_long = len(url_text or "") > 140
     qr = qrcode.QRCode(
         version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=7,
+        error_correction=qrcode.constants.ERROR_CORRECT_L if is_long else qrcode.constants.ERROR_CORRECT_M,
+        box_size=4 if is_long else 7,
         border=2,
     )
     qr.add_data(url_text)
@@ -1035,8 +1053,112 @@ def _alipay_gateway_call(method_name: str, biz_dict: dict, notify_url: str = "")
     return parsed.get(resp_key) or {}
 
 
+def _build_alipay_redirect_url(method_name: str, biz_dict: dict, notify_url: str = "", return_url: str = "") -> str:
+    import urllib.parse
+
+    _refresh_alipay_keys_if_needed()
+    params = {
+        "app_id": ALIPAY_APP_ID,
+        "method": method_name,
+        "format": "JSON",
+        "charset": "utf-8",
+        "sign_type": "RSA2",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "version": "1.0",
+        "biz_content": json.dumps(biz_dict, ensure_ascii=False, separators=(",", ":")),
+    }
+    if notify_url:
+        params["notify_url"] = notify_url
+    if return_url:
+        params["return_url"] = return_url
+    unsigned = "&".join(f"{k}={params[k]}" for k in sorted(params) if params[k] != "" and params[k] is not None)
+    params["sign"] = _alipay_rsa2_sign(unsigned)
+    return "https://openapi.alipay.com/gateway.do?" + urllib.parse.urlencode(params)
+
+
+def _probe_alipay_web_url_live(target_url: str) -> bool:
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(
+            target_url,
+            headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile"},
+        )
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            txt = resp.read().decode("gbk", errors="ignore")
+            if (
+                "insufficient-isv-permissions" in txt
+                or "ISV权限不足" in txt
+                or "invalid-signature" in txt
+                or "调试错误" in txt
+            ):
+                return False
+            return True
+    except Exception:
+        return False
+
+
+def alipay_create_smart_checkout(
+    order_id: str, amount_fen: int, subject: str, notify_url: str = "", return_url: str = ""
+) -> tuple[bool, str, str, str]:
+    """
+    Tries official Alipay Face-to-Face (`alipay.trade.precreate`) first; if not bound (`40006`),
+    automatically falls back to `alipay.trade.wap.pay` / `alipay.trade.page.pay`!
+    Returns `(ok, qr_target_url, web_checkout_url, err_msg)`.
+    """
+    _refresh_alipay_keys_if_needed()
+    if not ALIPAY_DIRECT_CONFIGURED:
+        return False, "", "", "尚未配置支付宝开放平台密钥"
+
+    ali_ok, ali_qr, ali_err = alipay_precreate_qr(
+        order_id=order_id, amount_fen=amount_fen, subject=subject, notify_url=notify_url
+    )
+    if ali_ok and ali_qr:
+        return True, ali_qr, ali_qr, ""
+
+    yuan_str = f"{int(amount_fen) / 100.0:.2f}"
+    wap_url = _build_alipay_redirect_url(
+        "alipay.trade.wap.pay",
+        {
+            "out_trade_no": order_id,
+            "total_amount": yuan_str,
+            "subject": subject[:64],
+            "product_code": "QUICK_WAP_WAY",
+            "timeout_express": "20m",
+        },
+        notify_url=notify_url,
+        return_url=return_url,
+    )
+    page_url = _build_alipay_redirect_url(
+        "alipay.trade.page.pay",
+        {
+            "out_trade_no": order_id,
+            "total_amount": yuan_str,
+            "subject": subject[:64],
+            "product_code": "FAST_INSTANT_TRADE_PAY",
+            "timeout_express": "20m",
+        },
+        notify_url=notify_url,
+        return_url=return_url,
+    )
+    wap_live = _probe_alipay_web_url_live(wap_url)
+    page_live = _probe_alipay_web_url_live(page_url)
+    if wap_live or page_live:
+        qr_target = wap_url if wap_live else page_url
+        web_target = page_url if page_live else wap_url
+        return True, qr_target, web_target, ""
+
+    return (
+        False,
+        "",
+        "",
+        f"支付宝网关验签通过(AppID: {ALIPAY_APP_ID})，但收款接口待激活 [{ali_err}] —— 请在支付宝开放平台进入该应用确认已绑定【当面付/手机网站/电脑网站支付】并点击右上角【提交上线】，上线后无需重启即可秒出收款码！",
+    )
+
+
 def alipay_precreate_qr(order_id: str, amount_fen: int, subject: str, notify_url: str = "") -> tuple[bool, str, str]:
     """Creates an official Alipay Face-to-Face scan-to-pay QR (`alipay.trade.precreate`). Zero 3rd-party commission!"""
+    _refresh_alipay_keys_if_needed()
     if not ALIPAY_DIRECT_CONFIGURED:
         return False, "", "尚未配置支付宝开放平台密钥"
     try:
@@ -1061,6 +1183,7 @@ def alipay_precreate_qr(order_id: str, amount_fen: int, subject: str, notify_url
 
 def alipay_query_and_settle_order(order_id: str, now_ms: int) -> bool:
     """Queries official `alipay.trade.query` with RSA2 verification and settles atomically if PAID."""
+    _refresh_alipay_keys_if_needed()
     if not ALIPAY_DIRECT_CONFIGURED or not order_id:
         return False
     try:
@@ -2334,7 +2457,71 @@ class GameHandler(SimpleHTTPRequestHandler):
                         if op_id != pid and not op_obj.get("isBot") and (now - int(op_obj.get("lastSyncMs") or now)) > 120000:
                             _forfeit_party_player_locked(rm, op_id, "disconnect", now)
                 return self.send_json(_build_party_room_response_locked(rm, pid, now, drain_inbox=False))
+        if path == "/api/pay/alipay_return":
+            from urllib.parse import parse_qs, urlparse
+
+            _refresh_alipay_keys_if_needed()
+            qs = parse_qs(urlparse(self.path).query)
+            oid = (qs.get("out_trade_no") or [""])[0].strip()[:48]
+            if oid and ALIPAY_DIRECT_CONFIGURED:
+                alipay_query_and_settle_order(oid, now)
+            html_bytes = (
+                "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'/>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
+                "<title>支付完成 · 鹈鹕测试大乱斗</title></head>"
+                "<body style='background:#0f172a;color:#f8fafc;font-family:sans-serif;display:flex;align-items:center;"
+                "justify-content:center;height:100vh;margin:0;text-align:center;'>"
+                "<div><h2 style='color:#4ade80;'>✅ 支付宝付款已完成</h2>"
+                "<p>绿豆正在同步入账，正在自动返回车库...</p>"
+                "<a href='/' style='display:inline-block;margin-top:12px;padding:10px 22px;background:#38bdf8;color:#0f172a;"
+                "border-radius:999px;font-weight:900;text-decoration:none;'>立即返回游戏</a></div>"
+                "<script>setTimeout(()=>location.replace('/'),1200);</script></body></html>"
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html_bytes)))
+            self.end_headers()
+            self.wfile.write(html_bytes)
+            return
+
+        if path == "/api/pay/go":
+            from urllib.parse import parse_qs, urlparse
+
+            _refresh_alipay_keys_if_needed()
+            qs = parse_qs(urlparse(self.path).query)
+            oid = (qs.get("oid") or [""])[0].strip()[:48]
+            if not oid or not ALIPAY_DIRECT_CONFIGURED:
+                return self.send_plain_text("Invalid order", 400)
+            with DB_LOCK, sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                orow = conn.execute("SELECT * FROM recharge_orders WHERE order_id = ?", (oid,)).fetchone()
+            if not orow or orow["status"] != "PENDING":
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.end_headers()
+                return
+            ua = str(self.headers.get("User-Agent") or "")
+            is_mobile = bool(re.search(r"Mobile|Android|iPhone|iPad|AlipayClient", ua, re.I))
+            host_hdr = self.headers.get("Host") or "127.0.0.1:8788"
+            target = _build_alipay_redirect_url(
+                "alipay.trade.wap.pay" if is_mobile else "alipay.trade.page.pay",
+                {
+                    "out_trade_no": oid,
+                    "total_amount": f"{int(orow['amount_fen']) / 100.0:.2f}",
+                    "subject": f"鹈鹕测试大乱斗-{orow['pack_name']}"[:64],
+                    "product_code": "QUICK_WAP_WAY" if is_mobile else "FAST_INSTANT_TRADE_PAY",
+                    "timeout_express": "20m",
+                },
+                notify_url="https://nailong.openwaifu-agent.uk/api/pay/alipay_notify",
+                return_url=f"http://{host_hdr}/api/pay/alipay_return",
+            )
+            self.send_response(302)
+            self.send_header("Location", target)
+            self.end_headers()
+            return
+
         if path == "/api/pay/catalog":
+            _refresh_alipay_keys_if_needed()
             token = self.extract_token()
             first_eligible = True
             logged_in = False
@@ -2560,6 +2747,36 @@ class GameHandler(SimpleHTTPRequestHandler):
             rev = extract_save_rev(parsed_raw)
             clean_save = sanitize_save(parsed_raw, None)
             return self.send_json(build_signed_auth_payload(local_fast["display_name"], clean_save, rev, now), 200)
+
+        # Localhost-only zero-leak dev test panel injection (NEVER touches index.html on disk or Worker!)
+        client_ip = (self.client_address[0] if self.client_address else "")
+        is_loopback = client_ip in ("127.0.0.1", "::1") or client_ip.startswith("127.")
+        dev_panel_path = os.path.join(ROOT_DIR, "_local_dev_panel.js")
+        if is_loopback and path == "/__local_dev_panel.js" and os.path.isfile(dev_panel_path):
+            with open(dev_panel_path, "rb") as fp:
+                js_bytes = fp.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(js_bytes)))
+            self.end_headers()
+            self.wfile.write(js_bytes)
+            return
+
+        if is_loopback and path in ("/", "/index.html") and os.path.isfile(dev_panel_path):
+            idx_path = os.path.join(ROOT_DIR, "index.html")
+            if os.path.isfile(idx_path):
+                with open(idx_path, "r", encoding="utf-8") as fp:
+                    html_txt = fp.read()
+                inject_tag = f'<script src="/__local_dev_panel.js?t={int(os.path.getmtime(dev_panel_path))}"></script>\n</body>'
+                html_out = html_txt.replace("</body>", inject_tag, 1).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(html_out)))
+                self.end_headers()
+                self.wfile.write(html_out)
+                return
 
         return super().do_GET()
 
@@ -2922,8 +3139,10 @@ class GameHandler(SimpleHTTPRequestHandler):
                 orow = conn.execute("SELECT * FROM recharge_orders WHERE order_id = ?", (order_id,)).fetchone()
                 conn.commit()
 
+            _refresh_alipay_keys_if_needed()
             expected_first = FIRST_RECHARGE_BONUS_BEANS if first_eligible else 0
             checkout_url = ""
+            qr_target_url = ""
             if ALIPAY_DIRECT_CONFIGURED:
                 if pay_channel == "wechat" and not ALLOW_AFDIAN_FALLBACK:
                     return self.send_json(
@@ -2933,24 +3152,28 @@ class GameHandler(SimpleHTTPRequestHandler):
                         },
                         400,
                     )
-                ali_ok, ali_qr, ali_err = alipay_precreate_qr(
+                host_hdr = self.headers.get("Host") or "127.0.0.1:8788"
+                ali_ok, ali_qr_target, ali_web_url, ali_err = alipay_create_smart_checkout(
                     order_id=order_id,
                     amount_fen=pack["amount_fen"],
                     subject=f"鹈鹕测试大乱斗-{pack['name']}",
                     notify_url="https://nailong.openwaifu-agent.uk/api/pay/alipay_notify",
+                    return_url=f"http://{host_hdr}/api/pay/alipay_return",
                 )
                 if ali_ok:
-                    checkout_url = ali_qr
+                    qr_target_url = ali_qr_target
+                    checkout_url = ali_web_url
                 elif ALLOW_AFDIAN_FALLBACK and AFDIAN_USER_ID and AFDIAN_TOKEN:
                     checkout_url = (
                         f"https://ifdian.net/order/create?user_id={AFDIAN_USER_ID}"
                         f"&custom_order_id={order_id}&custom_price={pack['price_yuan']}&remark={order_id}"
                     )
+                    qr_target_url = checkout_url
                 else:
                     return self.send_json(
                         {
                             "ok": False,
-                            "error": f"{ali_err} —— 请在 Edge 完成当面付最后几项资料提交，审核通过后无需改一行代码即可直连收款到你支付宝余额！",
+                            "error": ali_err,
                         },
                         503,
                     )
@@ -2959,9 +3182,11 @@ class GameHandler(SimpleHTTPRequestHandler):
                     f"https://ifdian.net/order/create?user_id={AFDIAN_USER_ID}"
                     f"&custom_order_id={order_id}&custom_price={pack['price_yuan']}&remark={order_id}"
                 )
+                qr_target_url = checkout_url
             else:
                 checkout_url = f"pelicanpay://{pay_channel}/checkout?oid={order_id}&fen={pack['amount_fen']}"
-            qr_data_url = make_qr_data_url(checkout_url)
+                qr_target_url = checkout_url
+            qr_data_url = make_qr_data_url(qr_target_url or checkout_url)
 
             return self.send_json(
                 {
@@ -2972,7 +3197,7 @@ class GameHandler(SimpleHTTPRequestHandler):
                     "expectedTotalBeans": pack["total_beans"] + expected_first,
                     "realPayEnabled": REAL_PAY_ENABLED,
                     "sandboxEnabled": SANDBOX_PAY_ENABLED,
-                    "payCodeUrl": checkout_url,
+                    "payCodeUrl": qr_target_url or checkout_url,
                     "checkoutUrl": checkout_url,
                     "qrDataUrl": qr_data_url,
                 },
