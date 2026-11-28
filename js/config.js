@@ -130,10 +130,10 @@ export const WORLD_PROP_POOL = [
   { id: 'gatling', sprite: 'prop_gatling', badge: '🏀加特林', halo: '#0ea5e9', toast: '🏀 武器切换：六管篮球加特林!' },
   { id: 'bazooka', sprite: 'prop_bazooka', badge: '🦈火箭筒', halo: '#22c55e', toast: '🦈 武器切换：深海鲨鱼火箭筒!' },
   { id: 'giant_spicy', sprite: 'prop_giant', badge: '🌶️巨人化', halo: '#fde047', toast: '🌶️ 卫龙辣条 · 短暂巨人化!' },
-  { id: 'midas_gold', sprite: 'prop_midas', badge: '💰点豆成金', halo: '#facc15', toast: '💰 点豆成金 · 绿豆三倍!' },
+  { id: 'midas_gold', sprite: 'prop_midas', badge: '🪙点豆成金', halo: '#facc15', toast: '🪙 点豆成金 · 绿豆三倍暴富!' },
   { id: 'maodie_pack', sprite: 'prop_maodie', badge: '🐱耄耋群袭', halo: '#fb923c', toast: '🐱 召唤圆头耄耋大军出击!' },
   { id: 'thunder_drum', sprite: 'prop_lightning', badge: '⚡雷电护体', halo: '#38bdf8', toast: '⚡ 雷电护体 · 自动电击清场!' },
-  { id: 'sky_wings', sprite: 'prop_wings', badge: '🕊️滑翔飞翼', halo: '#7dd3fc', toast: '🕊️ 滑翔飞翼 · 五连跳!' }
+  { id: 'sky_wings', sprite: 'prop_wings', badge: '🪽滑翔飞翼', halo: '#7dd3fc', toast: '🪽 飞天滑翔翼 · 轻盈五连跳!' }
 ];
 
 // Scarce Gradual-Regen Healing Boba (~18~20% MaxHP smooth HoT, scarce so HP tension matters!)
